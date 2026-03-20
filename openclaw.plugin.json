@@ -1,0 +1,52 @@
+{
+  "id": "openclaw-customprovider-cache",
+  "name": "OpenClaw Custom Provider Cache",
+  "description": "Independent OpenClaw plugin that preserves provider-native cache and session identifiers for custom providers.",
+  "version": "0.2.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "providers": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "openai": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "injectSessionIdHeader": {
+            "type": "boolean",
+            "default": true
+          },
+          "injectPromptCacheKey": {
+            "type": "boolean",
+            "default": true
+          }
+        }
+      },
+      "anthropic": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "injectMetadataUserId": {
+            "type": "boolean",
+            "default": true
+          },
+          "userId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "userIdPrefix": {
+            "type": "string",
+            "minLength": 1,
+            "default": "openclaw"
+          }
+        }
+      }
+    }
+  }
+}

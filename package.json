@@ -1,0 +1,53 @@
+{
+  "name": "openclaw-customprovider-cache",
+  "version": "0.2.0",
+  "description": "Independent OpenClaw plugin that preserves provider-native cache and session identifiers for custom providers.",
+  "license": "MIT",
+  "keywords": [
+    "openclaw",
+    "plugin",
+    "proxy",
+    "codex",
+    "anthropic"
+  ],
+  "type": "module",
+  "files": [
+    "index.ts",
+    "openclaw.plugin.json",
+    "README.md",
+    "LICENSE",
+    "scripts/install.py",
+    "src/config.ts",
+    "src/fetch-patch.ts",
+    "src/identity.ts",
+    "src/proxy-rewrite.ts",
+    "src/proxy-service.ts",
+    "src/types.ts"
+  ],
+  "scripts": {
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "install:plugin": "python3 scripts/install.py"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.3.8"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "25.4.0",
+    "typescript": "5.9.3",
+    "vitest": "4.0.18"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
