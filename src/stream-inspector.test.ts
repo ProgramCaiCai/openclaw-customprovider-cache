@@ -81,6 +81,55 @@ describe("inspectSseStream", () => {
       },
     });
   });
+
+  it("marks google streams as completed when they reach a terminal finish reason after visible output", async () => {
+    const result = await inspectSseStream({
+      api: "google-generative-ai",
+      stream: streamFromText(
+        'data: {"candidates":[{"content":{"parts":[{"text":"hello"}]}}]}\n\n',
+        'data: {"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":" world"}]}}]}\n\n',
+      ),
+    });
+
+    expect(result).toMatchObject({
+      semanticState: "completed",
+      sawVisibleOutput: true,
+    });
+  });
+
+  it("marks google streams without usable model output as ended-empty", async () => {
+    const result = await inspectSseStream({
+      api: "google-generative-ai",
+      stream: streamFromText(
+        'data: {"promptFeedback":{"blockReason":"SAFETY"},"candidates":[{"finishReason":"SAFETY"}]}\n\n',
+      ),
+    });
+
+    expect(result).toMatchObject({
+      semanticState: "ended-empty",
+      sawVisibleOutput: false,
+    });
+  });
+
+  it("marks google error payloads as errors", async () => {
+    const result = await inspectSseStream({
+      api: "google-generative-ai",
+      stream: streamFromText(
+        'event: error\n',
+        'data: {"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"quota exhausted"}}\n\n',
+      ),
+    });
+
+    expect(result).toMatchObject({
+      semanticState: "error",
+      sawVisibleOutput: false,
+      semanticError: {
+        code: "RESOURCE_EXHAUSTED",
+        message: "quota exhausted",
+        providerStatus: 429,
+      },
+    });
+  });
 });
 
 function streamFromText(...chunks: string[]): ReadableStream<Uint8Array> {

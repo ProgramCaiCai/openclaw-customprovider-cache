@@ -7,7 +7,9 @@ import type {
   ForwardedResponseBodyState,
   ForwardedResponseLogRecord,
   ForwardedResponseSummaryLogRecord,
+  NormalizedProviderErrorKind,
   PluginLogger,
+  ProviderTerminalKind,
   RequestExecutionClass,
   RequestLoggingConfig,
   SemanticFailureInfo,
@@ -108,6 +110,123 @@ function sanitizeBodyBuffer(contentType: string | null, bodyBuffer: Buffer): unk
   return sanitizeString(bodyText);
 }
 
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function asNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function extractProviderErrorDetails(body: unknown): {
+  status?: number;
+  code?: string;
+  message?: string;
+} {
+  const record = asRecord(body);
+  const error = asRecord(record?.error) ?? record;
+  return {
+    status: asNumber(error?.status) ?? asNumber(error?.code),
+    code: asString(error?.code) ?? asString(error?.status),
+    message: asString(error?.message),
+  };
+}
+
+function resolveProviderStatus(input: {
+  status?: number;
+  semanticError?: SemanticFailureInfo;
+  body?: unknown;
+}): number | undefined {
+  return (
+    input.semanticError?.providerStatus ??
+    input.semanticError?.status ??
+    extractProviderErrorDetails(input.body).status ??
+    (input.status !== undefined && input.status >= 400 ? input.status : undefined)
+  );
+}
+
+function resolveProviderTerminalKind(input: {
+  status?: number;
+  semanticState?: SemanticState;
+}): ProviderTerminalKind | undefined {
+  if (input.semanticState === "completed") {
+    return "completed";
+  }
+  if (input.semanticState === "error" || input.semanticState === "error-after-partial") {
+    return "semantic-error";
+  }
+  if (input.semanticState === "unknown-stream") {
+    return "unknown-stream";
+  }
+  if (input.semanticState === "ended-empty") {
+    return "ended-empty";
+  }
+  if (input.semanticState === "aborted") {
+    return "aborted";
+  }
+  if (input.status !== undefined && input.status >= 400) {
+    return "transport-error";
+  }
+  return undefined;
+}
+
+function resolveNormalizedErrorKind(input: {
+  status?: number;
+  semanticState?: SemanticState;
+  semanticError?: SemanticFailureInfo;
+  body?: unknown;
+}): NormalizedProviderErrorKind | undefined {
+  if (input.semanticState === "ended-empty" || input.semanticState === "aborted") {
+    return "invalid-stream";
+  }
+
+  const providerDetails = extractProviderErrorDetails(input.body);
+  const providerStatus = resolveProviderStatus(input);
+  const fingerprint = [
+    input.semanticError?.code,
+    input.semanticError?.message,
+    providerDetails.code,
+    providerDetails.message,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  if (/invalid stream|malformed|unexpected end|stream ended without a terminal success event|stream aborted before a terminal success event/.test(fingerprint)) {
+    return "invalid-stream";
+  }
+
+  if (
+    providerStatus === 401 ||
+    providerStatus === 403 ||
+    /unauth|invalid api key|permission denied|forbidden|credential/.test(fingerprint)
+  ) {
+    return "auth";
+  }
+
+  if (
+    providerStatus === 429 ||
+    /rate[_ -]?limit|too many requests|quota|resource exhausted|throttl/.test(fingerprint)
+  ) {
+    return "rate-limit";
+  }
+
+  if (
+    (providerStatus !== undefined && providerStatus >= 500) ||
+    /overload|capacity|busy|temporar(?:y|ily unavailable)|unavailable/.test(fingerprint)
+  ) {
+    return "upstream-overloaded";
+  }
+
+  return undefined;
+}
+
 function createRequestLogRecord(input: {
   requestId: string;
   provider: string;
@@ -146,6 +265,11 @@ function createResponseLogRecord(input: {
 }): ForwardedResponseLogRecord {
   const semanticState =
     input.semanticState ?? (input.bodyState === "stream-like" ? "unknown-stream" : undefined);
+  const providerStatus = resolveProviderStatus({
+    status: input.status,
+    semanticError: input.semanticError,
+    body: input.body,
+  });
 
   return {
     event: "response",
@@ -162,6 +286,14 @@ function createResponseLogRecord(input: {
     semanticState,
     semanticError: input.semanticError ? sanitizeValue(input.semanticError) as SemanticFailureInfo : undefined,
     executionClass: input.executionClass,
+    providerStatus,
+    providerTerminalKind: resolveProviderTerminalKind({ status: input.status, semanticState }),
+    normalizedErrorKind: resolveNormalizedErrorKind({
+      status: input.status,
+      semanticState,
+      semanticError: input.semanticError,
+      body: input.body,
+    }),
   };
 }
 
@@ -175,6 +307,11 @@ function createResponseSummaryLogRecord(input: {
   executionClass?: RequestExecutionClass;
   transportStatus?: number;
 }): ForwardedResponseSummaryLogRecord {
+  const providerStatus = resolveProviderStatus({
+    status: input.transportStatus,
+    semanticError: input.semanticError,
+  });
+
   return {
     event: "response-summary",
     requestId: input.requestId,
@@ -186,6 +323,13 @@ function createResponseSummaryLogRecord(input: {
     semanticError: input.semanticError ? sanitizeValue(input.semanticError) as SemanticFailureInfo : undefined,
     executionClass: input.executionClass,
     transportStatus: input.transportStatus,
+    providerStatus,
+    providerTerminalKind: resolveProviderTerminalKind({ semanticState: input.semanticState }),
+    normalizedErrorKind: resolveNormalizedErrorKind({
+      status: input.transportStatus,
+      semanticState: input.semanticState,
+      semanticError: input.semanticError,
+    }),
   };
 }
 

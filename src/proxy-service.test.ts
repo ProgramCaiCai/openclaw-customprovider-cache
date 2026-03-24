@@ -510,6 +510,97 @@ describe("SessionMetadataProxyService", () => {
     expect(summaryRecord.semanticState).toBe("completed");
   });
 
+  it("logs upstream stream overloads with normalized provider error categories", async () => {
+    const encoder = new TextEncoder();
+    const stateDir = await createStateDir(tempDirs);
+    const cfg = {
+      models: {
+        providers: {
+          openai: {
+            api: "openai-responses",
+            baseUrl: "https://openai.example.test/v1",
+            models: [],
+          },
+        },
+      },
+    };
+    globalThis.fetch = vi.fn(async () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode(
+              'data: {"type":"response.failed","response":{"status":529,"error":{"code":"overloaded_error","message":"capacity exhausted"}}}\n\n',
+            ),
+          );
+          controller.close();
+        },
+      });
+      return new Response(body, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    });
+    const service = new SessionMetadataProxyService({
+      config: cfg,
+      pluginConfig: {
+        providers: [],
+        semanticFailureGating: true,
+        requestLogging: {
+          enabled: true,
+          path: undefined,
+        },
+        openai: {
+          injectPromptCacheKey: true,
+          injectSessionIdHeader: true,
+        },
+        anthropic: {
+          injectMetadataUserId: true,
+          userId: undefined,
+          userIdPrefix: "openclaw",
+        },
+      },
+      stateDir,
+      logger: { info: () => {}, warn: () => {}, error: () => {} },
+    });
+    closers.push({ close: () => service.stop() });
+
+    await service.start();
+
+    const response = await fetch(`${cfg.models.providers.openai.baseUrl}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-5.2",
+        input: [{ role: "user", content: "AGENTS.md TOOLS.md" }],
+      }),
+    });
+
+    await expect(response.text()).rejects.toMatchObject({
+      status: 503,
+      code: "OVERLOADED",
+      message: "capacity exhausted",
+      providerStatus: 529,
+    });
+
+    await service.stop();
+
+    const [, , summaryLine] = (await readFile(join(stateDir, "forwarded-requests.jsonl"), "utf8"))
+      .trim()
+      .split("\n");
+    const summaryRecord = JSON.parse(summaryLine ?? "null") as {
+      semanticState: string;
+      providerStatus?: number;
+      normalizedErrorKind?: string;
+    };
+
+    expect(summaryRecord.semanticState).toBe("error");
+    expect(summaryRecord.providerStatus).toBe(529);
+    expect(summaryRecord.normalizedErrorKind).toBe("upstream-overloaded");
+  });
+
   it("passes covered streams through untouched when semantic failure gating is disabled", async () => {
     const encoder = new TextEncoder();
     const stateDir = await createStateDir(tempDirs);

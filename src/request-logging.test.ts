@@ -44,7 +44,7 @@ describe("createForwardedRequestLogger", () => {
     expect(line.semanticState).toBeUndefined();
   });
 
-  it("annotates stream-like transport responses as unknown semantic state", async () => {
+  it("annotates stream-like transport responses as unresolved instead of implying success", async () => {
     const stateDir = await createStateDir(tempDirs);
     const logger = createForwardedRequestLogger({
       config: { enabled: true },
@@ -71,13 +71,62 @@ describe("createForwardedRequestLogger", () => {
       requestId: "req-stream",
       bodyState: "stream-like",
       semanticState: "unknown-stream",
+      providerTerminalKind: "unknown-stream",
       executionClass: "subagent-like",
       truncated: false,
     });
+    expect(line.providerStatus).toBeUndefined();
+    expect(line.normalizedErrorKind).toBeUndefined();
     expect(line.body).toBeUndefined();
   });
 
-  it("writes semantic response summaries", async () => {
+  it("normalizes auth transport failures while preserving raw provider payloads", async () => {
+    const stateDir = await createStateDir(tempDirs);
+    const logger = createForwardedRequestLogger({
+      config: { enabled: true },
+      stateDir,
+      logger: { info: () => {}, warn: () => {}, error: () => {} },
+    });
+
+    await logger?.appendResponse({
+      requestId: "req-auth",
+      provider: "google",
+      api: "google-generative-ai",
+      url: "https://example.test/v1beta/models/gemini-2.5-pro:streamGenerateContent",
+      response: new Response(
+        JSON.stringify({
+          error: {
+            code: 401,
+            status: "UNAUTHENTICATED",
+            message: "API key invalid",
+          },
+        }),
+        {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    });
+    await logger?.flush();
+
+    const [line] = await readLines(stateDir);
+    expect(line).toMatchObject({
+      event: "response",
+      requestId: "req-auth",
+      status: 401,
+      providerStatus: 401,
+      normalizedErrorKind: "auth",
+      body: {
+        error: {
+          code: 401,
+          status: "UNAUTHENTICATED",
+          message: "API key invalid",
+        },
+      },
+    });
+  });
+
+  it("writes semantic response summaries with normalized error kinds", async () => {
     const stateDir = await createStateDir(tempDirs);
     const logger = createForwardedRequestLogger({
       config: { enabled: true },
@@ -96,26 +145,87 @@ describe("createForwardedRequestLogger", () => {
       semanticError: {
         status: 429,
         code: "RATE_LIMIT",
-        message: "rate limited upstream",
+        message: "quota exhausted upstream",
         providerStatus: 529,
       },
+    });
+    await logger?.appendResponseSummary({
+      requestId: "req-invalid-stream",
+      provider: "openai",
+      api: "openai-responses",
+      url: "https://example.test/v1/responses",
+      transportStatus: 200,
+      semanticState: "ended-empty",
+      executionClass: "subagent-like",
+      semanticError: {
+        status: 408,
+        code: "STREAM_ABORTED",
+        message: "stream ended without a terminal success event",
+      },
+    });
+    await logger?.flush();
+
+    const [rateLimitLine, invalidStreamLine] = await readLines(stateDir);
+    expect(rateLimitLine).toMatchObject({
+      event: "response-summary",
+      requestId: "req-summary",
+      semanticState: "error",
+      providerTerminalKind: "semantic-error",
+      executionClass: "subagent-like",
+      transportStatus: 200,
+      providerStatus: 529,
+      normalizedErrorKind: "rate-limit",
+      semanticError: {
+        status: 429,
+        code: "RATE_LIMIT",
+        message: "quota exhausted upstream",
+        providerStatus: 529,
+      },
+    });
+    expect(invalidStreamLine).toMatchObject({
+      event: "response-summary",
+      requestId: "req-invalid-stream",
+      semanticState: "ended-empty",
+      providerTerminalKind: "ended-empty",
+      normalizedErrorKind: "invalid-stream",
+      semanticError: {
+        status: 408,
+        code: "STREAM_ABORTED",
+        message: "stream ended without a terminal success event",
+      },
+    });
+  });
+
+  it("marks completed summaries with an explicit provider terminal kind", async () => {
+    const stateDir = await createStateDir(tempDirs);
+    const logger = createForwardedRequestLogger({
+      config: { enabled: true },
+      stateDir,
+      logger: { info: () => {}, warn: () => {}, error: () => {} },
+    });
+
+    await logger?.appendResponseSummary({
+      requestId: "req-completed",
+      provider: "anthropic",
+      api: "anthropic-messages",
+      url: "https://example.test/v1/messages",
+      transportStatus: 200,
+      semanticState: "completed",
+      executionClass: "main-like",
     });
     await logger?.flush();
 
     const [line] = await readLines(stateDir);
     expect(line).toMatchObject({
       event: "response-summary",
-      requestId: "req-summary",
-      semanticState: "error",
-      executionClass: "subagent-like",
+      requestId: "req-completed",
+      semanticState: "completed",
+      providerTerminalKind: "completed",
+      executionClass: "main-like",
       transportStatus: 200,
-      semanticError: {
-        status: 429,
-        code: "RATE_LIMIT",
-        message: "rate limited upstream",
-        providerStatus: 529,
-      },
     });
+    expect(line.providerStatus).toBeUndefined();
+    expect(line.normalizedErrorKind).toBeUndefined();
   });
 });
 
