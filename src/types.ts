@@ -76,6 +76,20 @@ export type SemanticState =
 
 export type RequestExecutionClass = "main-like" | "subagent-like" | "unknown";
 
+export type NormalizedProviderErrorKind =
+  | "auth"
+  | "rate-limit"
+  | "upstream-overloaded"
+  | "invalid-stream";
+
+export type ProviderTerminalKind =
+  | "completed"
+  | "semantic-error"
+  | "unknown-stream"
+  | "ended-empty"
+  | "aborted"
+  | "transport-error";
+
 export type SemanticFailureInfo = {
   status?: number;
   code?: string;
@@ -123,6 +137,9 @@ export type ForwardedResponseLogRecord = {
   semanticState?: SemanticState;
   semanticError?: SemanticFailureInfo;
   executionClass?: RequestExecutionClass;
+  providerStatus?: number;
+  providerTerminalKind?: ProviderTerminalKind;
+  normalizedErrorKind?: NormalizedProviderErrorKind;
 };
 
 export type ForwardedResponseSummaryLogRecord = {
@@ -136,6 +153,9 @@ export type ForwardedResponseSummaryLogRecord = {
   semanticError?: SemanticFailureInfo;
   executionClass?: RequestExecutionClass;
   transportStatus?: number;
+  providerStatus?: number;
+  providerTerminalKind?: ProviderTerminalKind;
+  normalizedErrorKind?: NormalizedProviderErrorKind;
 };
 
 export type ForwardedRequestLogger = {
