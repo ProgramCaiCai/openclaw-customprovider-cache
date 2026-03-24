@@ -40,6 +40,7 @@ describe("createPatchedFetch", () => {
       stableUserId: "openclaw-user",
       fallbackSessionId: "session-stable",
       semanticFailureGating: true,
+      retrySteeringForPoisonedChildResults: true,
       openai: {
         injectPromptCacheKey: true,
         injectSessionIdHeader: true,
@@ -110,6 +111,7 @@ describe("createPatchedFetch", () => {
       stableUserId: "stable-user",
       fallbackSessionId: "stable-session",
       semanticFailureGating: true,
+      retrySteeringForPoisonedChildResults: true,
       openai: {
         injectPromptCacheKey: true,
         injectSessionIdHeader: true,
@@ -176,6 +178,7 @@ describe("createPatchedFetch", () => {
       stableUserId: "stable-user",
       fallbackSessionId: "stable-session",
       semanticFailureGating: true,
+      retrySteeringForPoisonedChildResults: true,
       openai: {
         injectPromptCacheKey: true,
         injectSessionIdHeader: true,
@@ -240,6 +243,138 @@ describe("createPatchedFetch", () => {
     expect(classifyExecutionClass(promptText)).toBe("subagent-like");
   });
 
+  it("classifies requests without bootstrap markers as unknown", () => {
+    const promptText = extractPromptishText(
+      { provider: "openai", api: "openai-responses", baseUrl: "https://example.test/v1" },
+      new Headers({ "content-type": "application/json" }),
+      Buffer.from(
+        JSON.stringify({
+          model: "gpt-5.2",
+          input: [{ role: "user", content: "plain user request with no internal bootstrap files" }],
+        }),
+      ),
+    );
+
+    expect(classifyExecutionClass(promptText)).toBe("unknown");
+  });
+
+  it("short-circuits suspicious parent-consumption requests before upstream generation", async () => {
+    const originalFetch = vi.fn(async () => new Response("unexpected upstream call", { status: 200 }));
+    const logger = createMemoryLogger();
+    const fetchWithPatch = createPatchedFetch({
+      originalFetch,
+      rules: [
+        {
+          provider: "openai",
+          api: "openai-responses",
+          baseUrl: "https://api.example.test/v1",
+        },
+      ],
+      stableUserId: "openclaw-user",
+      fallbackSessionId: "session-stable",
+      requestLogger: logger,
+      semanticFailureGating: true,
+      retrySteeringForPoisonedChildResults: true,
+      openai: {
+        injectPromptCacheKey: true,
+        injectSessionIdHeader: true,
+      },
+      anthropic: {
+        injectMetadataUserId: true,
+        userId: undefined,
+        userIdPrefix: "openclaw",
+      },
+    });
+
+    const response = await fetchWithPatch("https://api.example.test/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.2",
+        input: [
+          {
+            role: "user",
+            content:
+              "SOUL.md AGENTS.md TOOLS.md\nSubagent completed successfully.\n```md\n# HEARTBEAT.md\nstatus: green\n```",
+          },
+        ],
+      }),
+    });
+
+    expect(originalFetch).not.toHaveBeenCalled();
+    expect(response.status).toBe(408);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: "RETRY_STEERING_POISONED_CHILD_RESULT",
+        retryable: true,
+        retrySteeringVerdict: "poisoned-child-result",
+        retrySteeringReason: "raw-child-result-dump",
+      },
+    });
+    expect(logger.requests).toContainEqual(
+      expect.objectContaining({
+        executionClass: "main-like",
+        retrySteeringVerdict: "poisoned-child-result",
+        retrySteeringReason: "raw-child-result-dump",
+      }),
+    );
+    expect(logger.responseSummaries).toContainEqual(
+      expect.objectContaining({
+        executionClass: "main-like",
+        retrySteeringVerdict: "poisoned-child-result",
+        retrySteeringReason: "raw-child-result-dump",
+        semanticError: expect.objectContaining({
+          status: 408,
+          code: "RETRY_STEERING_POISONED_CHILD_RESULT",
+        }),
+      }),
+    );
+  });
+
+  it("does not short-circuit main-like requests without suspicious retry-steering markers", async () => {
+    const originalFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const fetchWithPatch = createPatchedFetch({
+      originalFetch,
+      rules: [
+        {
+          provider: "openai",
+          api: "openai-responses",
+          baseUrl: "https://api.example.test/v1",
+        },
+      ],
+      stableUserId: "openclaw-user",
+      fallbackSessionId: "session-stable",
+      semanticFailureGating: true,
+      retrySteeringForPoisonedChildResults: true,
+      openai: {
+        injectPromptCacheKey: true,
+        injectSessionIdHeader: true,
+      },
+      anthropic: {
+        injectMetadataUserId: true,
+        userId: undefined,
+        userIdPrefix: "openclaw",
+      },
+    });
+
+    const response = await fetchWithPatch("https://api.example.test/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.2",
+        input: [{ role: "user", content: "SOUL.md AGENTS.md TOOLS.md\nContinue with the implementation plan." }],
+      }),
+    });
+
+    expect(originalFetch).toHaveBeenCalledTimes(1);
+    await expect(response.json()).resolves.toEqual({ ok: true });
+  });
+
   it("turns pre-first-token semantic failures into real stream errors", async () => {
     const logger = createMemoryLogger();
     const fetchWithPatch = createPatchedFetch({
@@ -265,6 +400,7 @@ describe("createPatchedFetch", () => {
       fallbackSessionId: "session-stable",
       requestLogger: logger,
       semanticFailureGating: true,
+      retrySteeringForPoisonedChildResults: true,
       openai: {
         injectPromptCacheKey: true,
         injectSessionIdHeader: true,
@@ -329,6 +465,7 @@ describe("createPatchedFetch", () => {
       fallbackSessionId: "session-stable",
       requestLogger: logger,
       semanticFailureGating: false,
+      retrySteeringForPoisonedChildResults: true,
       openai: {
         injectPromptCacheKey: true,
         injectSessionIdHeader: true,
@@ -381,6 +518,7 @@ describe("createPatchedFetch", () => {
       fallbackSessionId: "session-stable",
       requestLogger: logger,
       semanticFailureGating: true,
+      retrySteeringForPoisonedChildResults: true,
       openai: {
         injectPromptCacheKey: true,
         injectSessionIdHeader: true,
@@ -438,6 +576,7 @@ describe("createPatchedFetch", () => {
       fallbackSessionId: "session-stable",
       requestLogger: logger,
       semanticFailureGating: true,
+      retrySteeringForPoisonedChildResults: true,
       openai: {
         injectPromptCacheKey: true,
         injectSessionIdHeader: true,
@@ -500,13 +639,18 @@ function decodeChunk(chunk?: Uint8Array): string {
 }
 
 function createMemoryLogger(): ForwardedRequestLogger & {
+  requests: Array<Record<string, unknown>>;
   responseSummaries: Array<Record<string, unknown>>;
 } {
+  const requests: Array<Record<string, unknown>> = [];
   const responseSummaries: Array<Record<string, unknown>> = [];
 
   return {
+    requests,
     responseSummaries,
-    appendRequest: async () => undefined,
+    appendRequest: async (record) => {
+      requests.push(record as unknown as Record<string, unknown>);
+    },
     appendResponse: async () => undefined,
     appendResponseSummary: async (record) => {
       responseSummaries.push(record as unknown as Record<string, unknown>);

@@ -22,6 +22,7 @@ That matters because upstream systems such as cache layers, prompt stores, or co
 - Injects missing Anthropic `metadata.user_id`
 - Converts semantic fake-success streams into real failures before the first visible token for covered providers
 - Escalates post-first-token semantic failures only for subagent-like requests detected by the `SOUL.md`-absence heuristic
+- Fails narrow suspicious parent-consumption requests before upstream generation when child completion payloads look raw, empty, or missing deliverable signals
 - Leaves auth handling to OpenClaw and forwards existing auth headers unchanged
 - Keeps request rewriting scoped to configured custom-provider traffic
 
@@ -69,6 +70,7 @@ The plugin works with defaults. Configure it under `plugins.entries.openclaw-cus
 {
   "providers": ["custom-openai", "custom-anthropic"],
   "semanticFailureGating": true,
+  "retrySteeringForPoisonedChildResults": true,
   "requestLogging": {
     "enabled": false
   },
@@ -87,10 +89,27 @@ Notes:
 
 - `providers`: empty means all configured providers with supported APIs
 - `semanticFailureGating`: defaults to `true`; set `false` to disable semantic stream inspection and let covered streams pass through untouched
+- `retrySteeringForPoisonedChildResults`: defaults to `true`; set `false` to disable only the request-side poisoned child-result retry steering short-circuit
 - `requestLogging.enabled`: when `true`, append sanitized JSONL request and response events for each forwarded plugin-handled request to `stateDir/forwarded-requests.jsonl`
 - `requestLogging.path`: optional custom log file path; relative paths resolve from the plugin `stateDir`
 - `anthropic.userId`: optional explicit `metadata.user_id`
 - `anthropic.userIdPrefix`: used when generating a stable installation-scoped identity
+
+## Retry steering stopgap
+
+This stopgap is intentionally narrow and plugin-only. Before a matched request is forwarded upstream, the plugin now looks for parent-consumption payloads that claim a child completed successfully while carrying suspicious content such as:
+
+- raw markdown or file-dump style payloads
+- explicit `(no output)` child results
+- progress-only child results without deliverable signals
+
+When matched, the plugin returns a synthetic `408` JSON error with code `RETRY_STEERING_POISONED_CHILD_RESULT`, logs the decision, and avoids upstream generation entirely.
+
+Current limits:
+
+- It only runs on traffic already handled by this plugin
+- It is heuristic and intentionally fail-closed on a narrow class of suspicious child-completion payloads
+- It cannot repair poisoned parent state or incorrect core success semantics after a bad child result has already been accepted upstream
 
 ## Semantic failure gating
 

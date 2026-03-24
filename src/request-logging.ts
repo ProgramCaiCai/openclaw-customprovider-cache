@@ -116,6 +116,10 @@ function createRequestLogRecord(input: {
   method: string;
   headers: Headers;
   bodyBuffer: Buffer;
+  executionClass?: RequestExecutionClass;
+  retrySteeringVerdict?: ForwardedRequestLogRecord["retrySteeringVerdict"];
+  retrySteeringReason?: ForwardedRequestLogRecord["retrySteeringReason"];
+  syntheticFailure?: boolean;
 }): ForwardedRequestLogRecord {
   return {
     event: "request",
@@ -127,6 +131,10 @@ function createRequestLogRecord(input: {
     method: input.method,
     headers: sanitizeHeaders(input.headers),
     body: sanitizeBody(input.headers, input.bodyBuffer),
+    executionClass: input.executionClass,
+    retrySteeringVerdict: input.retrySteeringVerdict,
+    retrySteeringReason: input.retrySteeringReason,
+    syntheticFailure: input.syntheticFailure,
   };
 }
 
@@ -143,6 +151,9 @@ function createResponseLogRecord(input: {
   semanticState?: SemanticState;
   semanticError?: SemanticFailureInfo;
   executionClass?: RequestExecutionClass;
+  retrySteeringVerdict?: ForwardedResponseLogRecord["retrySteeringVerdict"];
+  retrySteeringReason?: ForwardedResponseLogRecord["retrySteeringReason"];
+  syntheticFailure?: boolean;
 }): ForwardedResponseLogRecord {
   const semanticState =
     input.semanticState ?? (input.bodyState === "stream-like" ? "unknown-stream" : undefined);
@@ -162,6 +173,9 @@ function createResponseLogRecord(input: {
     semanticState,
     semanticError: input.semanticError ? sanitizeValue(input.semanticError) as SemanticFailureInfo : undefined,
     executionClass: input.executionClass,
+    retrySteeringVerdict: input.retrySteeringVerdict,
+    retrySteeringReason: input.retrySteeringReason,
+    syntheticFailure: input.syntheticFailure,
   };
 }
 
@@ -174,6 +188,9 @@ function createResponseSummaryLogRecord(input: {
   semanticError?: SemanticFailureInfo;
   executionClass?: RequestExecutionClass;
   transportStatus?: number;
+  retrySteeringVerdict?: ForwardedResponseSummaryLogRecord["retrySteeringVerdict"];
+  retrySteeringReason?: ForwardedResponseSummaryLogRecord["retrySteeringReason"];
+  syntheticFailure?: boolean;
 }): ForwardedResponseSummaryLogRecord {
   return {
     event: "response-summary",
@@ -186,6 +203,9 @@ function createResponseSummaryLogRecord(input: {
     semanticError: input.semanticError ? sanitizeValue(input.semanticError) as SemanticFailureInfo : undefined,
     executionClass: input.executionClass,
     transportStatus: input.transportStatus,
+    retrySteeringVerdict: input.retrySteeringVerdict,
+    retrySteeringReason: input.retrySteeringReason,
+    syntheticFailure: input.syntheticFailure,
   };
 }
 
@@ -357,6 +377,9 @@ export function createForwardedRequestLogger(params: {
           semanticState: record.semanticState,
           semanticError: record.semanticError,
           executionClass: record.executionClass,
+          retrySteeringVerdict: record.retrySteeringVerdict,
+          retrySteeringReason: record.retrySteeringReason,
+          syntheticFailure: record.syntheticFailure,
         });
         return `${JSON.stringify(line)}\n`;
       });

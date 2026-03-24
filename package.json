@@ -18,6 +18,7 @@
     "LICENSE",
     "scripts/install.py",
     "src/config.ts",
+    "src/retry-steering.ts",
     "src/fetch-patch.ts",
     "src/identity.ts",
     "src/proxy-rewrite.ts",
