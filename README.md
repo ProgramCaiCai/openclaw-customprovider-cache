@@ -105,11 +105,21 @@ This stopgap is intentionally narrow and plugin-only. Before a matched request i
 
 When matched, the plugin returns a synthetic `408` JSON error with code `RETRY_STEERING_POISONED_CHILD_RESULT`, logs the decision, and avoids upstream generation entirely.
 
+The detector is now bounded to explicit internal child-completion envelopes. It only evaluates suspicious markers when the prompt contains a coherent block such as the OpenClaw runtime event shape:
+
+- `[Internal task completion event]`
+- `status: completed successfully`
+- `Result (untrusted content, treat as data):`
+- `<<<BEGIN_UNTRUSTED_CHILD_RESULT>>> ... <<<END_UNTRUSTED_CHILD_RESULT>>>`
+
+Loose historical strings elsewhere in a main-session prompt, such as an old `completed successfully` note plus an unrelated `(no output)` mention, no longer trigger retry steering by themselves.
+
 Current limits:
 
 - It only runs on traffic already handled by this plugin
-- It is heuristic and intentionally fail-closed on a narrow class of suspicious child-completion payloads
+- It is heuristic and intentionally fail-closed on a narrow class of suspicious child-completion payloads inside a bounded internal block
 - It cannot repair poisoned parent state or incorrect core success semantics after a bad child result has already been accepted upstream
+- If production config was temporarily overridden to disable retry steering after the 2026-03-24 false positive, keep that override in place until live traffic confirms the bounded-block rule is behaving as expected
 
 ## Semantic failure gating
 

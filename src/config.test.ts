@@ -54,6 +54,17 @@ describe("normalizePluginConfig", () => {
     });
   });
 
+  it("keeps retry steering on by default unless explicitly disabled", () => {
+    expect(
+      normalizePluginConfig({
+        semanticFailureGating: false,
+      }),
+    ).toMatchObject({
+      semanticFailureGating: false,
+      retrySteeringForPoisonedChildResults: true,
+    });
+  });
+
   it("allows disabling only the request-side retry-steering stopgap explicitly", () => {
     expect(
       normalizePluginConfig({

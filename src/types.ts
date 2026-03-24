@@ -42,6 +42,12 @@ export type RetrySteeringReason =
   | "child-completion-without-deliverable-summary"
   | "child-completion-empty-output";
 
+export type RetrySteeringBoundedBlock = {
+  kind: "internal-task-completion";
+  text: string;
+  result: string;
+};
+
 export type NormalizedPluginConfig = {
   providers: string[];
   semanticFailureGating: boolean;

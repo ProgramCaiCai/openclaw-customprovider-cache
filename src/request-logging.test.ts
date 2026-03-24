@@ -182,6 +182,48 @@ describe("createForwardedRequestLogger", () => {
       },
     });
   });
+
+
+  it("keeps stream-aborted 408 summaries distinct from retry steering stopgaps", async () => {
+    const stateDir = await createStateDir(tempDirs);
+    const logger = createForwardedRequestLogger({
+      config: { enabled: true },
+      stateDir,
+      logger: { info: () => {}, warn: () => {}, error: () => {} },
+    });
+
+    await logger?.appendResponseSummary({
+      requestId: "req-stream-aborted",
+      provider: "openai",
+      api: "openai-responses",
+      url: "https://example.test/v1/responses",
+      transportStatus: 200,
+      semanticState: "ended-empty",
+      executionClass: "subagent-like",
+      semanticError: {
+        status: 408,
+        code: "STREAM_ABORTED",
+        message: "stream ended without a terminal success event",
+      },
+    });
+    await logger?.flush();
+
+    const [line] = await readLines(stateDir);
+    expect(line).toMatchObject({
+      event: "response-summary",
+      requestId: "req-stream-aborted",
+      transportStatus: 200,
+      semanticState: "ended-empty",
+      executionClass: "subagent-like",
+      semanticError: {
+        status: 408,
+        code: "STREAM_ABORTED",
+        message: "stream ended without a terminal success event",
+      },
+    });
+    expect(line.retrySteeringVerdict).toBeUndefined();
+    expect(line.retrySteeringReason).toBeUndefined();
+  });
 });
 
 async function createStateDir(tempDirs: string[]): Promise<string> {

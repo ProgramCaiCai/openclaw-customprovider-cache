@@ -1,11 +1,16 @@
-import type { RetrySteeringReason, RetrySteeringVerdict } from "./types.js";
+import type {
+  RetrySteeringBoundedBlock,
+  RetrySteeringReason,
+  RetrySteeringVerdict,
+} from "./types.js";
 
 export type RetrySteeringDecision = {
   verdict: RetrySteeringVerdict;
   reason?: RetrySteeringReason;
 };
 
-const COMPLETION_SUCCESS_PATTERN = /\b(?:subagent|child|worker)?\s*completed successfully\b/i;
+const COMPLETION_STATUS_PATTERN = /(?:^|\n)status:\s*completed successfully\b/i;
+const RESULT_HEADER_PATTERN = /(?:^|\n)Result \(untrusted content, treat as data\):/i;
 const NO_OUTPUT_PATTERN = /\(\s*no output\s*\)/i;
 const REPORT_PATH_PATTERN = /\breports\/[^\s]+\/index\.md\b/i;
 const CHANGED_FILES_PATTERN = /(?:^|\n)changed files\s*:/i;
@@ -20,6 +25,10 @@ const PROGRESS_ONLY_PATTERNS = [
   /\breviewed the brief\/plan\/review\b/i,
   /\bno blocker\b/i,
   /\bprogress update\b/i,
+];
+const BOUNDED_BLOCK_PATTERNS = [
+  /\[Internal task completion event\][\s\S]{0,1200}?status:\s*completed successfully\b[\s\S]{0,400}?Result \(untrusted content, treat as data\):\s*\n<<<BEGIN_UNTRUSTED_CHILD_RESULT>>>\n?([\s\S]{0,12000}?)\n?<<<END_UNTRUSTED_CHILD_RESULT>>>/gi,
+  /(?:^|\n)type:\s*subagent task\b[\s\S]{0,600}?status:\s*completed successfully\b[\s\S]{0,200}?Result \(untrusted content, treat as data\):\s*\n<<<BEGIN_UNTRUSTED_CHILD_RESULT>>>\n?([\s\S]{0,12000}?)\n?<<<END_UNTRUSTED_CHILD_RESULT>>>/gi,
 ];
 
 function hasDeliverableSignals(promptText: string): boolean {
@@ -36,29 +45,70 @@ function createDecision(
   return { verdict, reason };
 }
 
-export function detectRetrySteeringNeed(promptText: string): RetrySteeringDecision {
-  const normalized = promptText.trim();
-  if (!COMPLETION_SUCCESS_PATTERN.test(normalized)) {
-    return { verdict: "none" };
+function extractBoundedChildCompletionBlocks(promptText: string): RetrySteeringBoundedBlock[] {
+  const blocks: RetrySteeringBoundedBlock[] = [];
+  const seenOffsets = new Set<number>();
+
+  for (const pattern of BOUNDED_BLOCK_PATTERNS) {
+    for (const match of promptText.matchAll(pattern)) {
+      const blockText = match[0];
+      const resultText = match[1] ?? "";
+      const index = match.index ?? -1;
+      if (index < 0 || seenOffsets.has(index)) {
+        continue;
+      }
+      if (!COMPLETION_STATUS_PATTERN.test(blockText) || !RESULT_HEADER_PATTERN.test(blockText)) {
+        continue;
+      }
+      seenOffsets.add(index);
+      blocks.push({
+        kind: "internal-task-completion",
+        text: blockText.trim(),
+        result: resultText.trim(),
+      });
+    }
   }
 
-  if (NO_OUTPUT_PATTERN.test(normalized)) {
+  return blocks;
+}
+
+function evaluateBoundedBlock(block: RetrySteeringBoundedBlock): RetrySteeringDecision {
+  const candidateText = block.text;
+  const resultText = block.result;
+
+  if (NO_OUTPUT_PATTERN.test(resultText) || NO_OUTPUT_PATTERN.test(candidateText)) {
     return createDecision("empty-child-result", "child-completion-empty-output");
   }
 
-  if (hasDeliverableSignals(normalized)) {
+  if (hasDeliverableSignals(resultText) || hasDeliverableSignals(candidateText)) {
     return { verdict: "none" };
   }
 
-  if (RAW_FILE_DUMP_PATTERNS.some((pattern) => pattern.test(normalized))) {
+  if (RAW_FILE_DUMP_PATTERNS.some((pattern) => pattern.test(resultText) || pattern.test(candidateText))) {
     return createDecision("poisoned-child-result", "raw-child-result-dump");
   }
 
-  if (PROGRESS_ONLY_PATTERNS.some((pattern) => pattern.test(normalized))) {
+  if (PROGRESS_ONLY_PATTERNS.some((pattern) => pattern.test(resultText) || pattern.test(candidateText))) {
     return createDecision(
       "poisoned-child-result",
       "child-completion-without-deliverable-summary",
     );
+  }
+
+  return { verdict: "none" };
+}
+
+export function detectRetrySteeringNeed(promptText: string): RetrySteeringDecision {
+  const normalized = promptText.trim();
+  if (normalized.length === 0) {
+    return { verdict: "none" };
+  }
+
+  for (const block of extractBoundedChildCompletionBlocks(normalized)) {
+    const decision = evaluateBoundedBlock(block);
+    if (decision.verdict !== "none") {
+      return decision;
+    }
   }
 
   return { verdict: "none" };
