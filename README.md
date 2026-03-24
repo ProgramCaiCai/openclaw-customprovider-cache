@@ -106,8 +106,15 @@ For covered streaming APIs, the plugin now distinguishes transport success from 
 When request logging is enabled, each covered stream can produce three JSONL records:
 
 - `request`
-- `response` with the transport-level `status`, `bodyState`, and initial `semanticState`
-- `response-summary` with the final `semanticState`, optional `semanticError`, and `executionClass`
+- `response` with the transport-level `status`, `bodyState`, initial `semanticState`, and a `providerTerminalKind` that keeps `200 + unknown-stream` explicitly unresolved
+- `response-summary` with the final `semanticState`, `providerTerminalKind`, optional `semanticError`, `normalizedErrorKind`, `providerStatus`, and `executionClass`
+
+`normalizedErrorKind` currently uses these stable categories for provider-facing failures:
+
+- `auth`
+- `rate-limit`
+- `upstream-overloaded`
+- `invalid-stream`
 
 The execution class is a v1 heuristic based on prompt/bootstrap payloads:
 
@@ -123,8 +130,8 @@ That heuristic matters because the policy is intentionally split:
 
 ## Current scope
 
-- Covered today: OpenAI Responses SSE and Anthropic Messages SSE
-- Not covered yet: Gemini semantic stream inspection and gating
+- Covered today: OpenAI Responses SSE, Anthropic Messages SSE, and Google `:streamGenerateContent` SSE-like streams
+- Google support in this plugin is semantic inspection and observability only; request-body identity injection remains scoped to OpenAI Responses and Anthropic Messages
 
 ## Verification
 

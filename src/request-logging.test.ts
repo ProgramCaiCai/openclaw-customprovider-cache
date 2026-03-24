@@ -44,7 +44,7 @@ describe("createForwardedRequestLogger", () => {
     expect(line.semanticState).toBeUndefined();
   });
 
-  it("annotates stream-like transport responses as unknown semantic state", async () => {
+  it("annotates stream-like transport responses as unresolved instead of implying success", async () => {
     const stateDir = await createStateDir(tempDirs);
     const logger = createForwardedRequestLogger({
       config: { enabled: true },
@@ -71,9 +71,12 @@ describe("createForwardedRequestLogger", () => {
       requestId: "req-stream",
       bodyState: "stream-like",
       semanticState: "unknown-stream",
+      providerTerminalKind: "unknown-stream",
       executionClass: "subagent-like",
       truncated: false,
     });
+    expect(line.providerStatus).toBeUndefined();
+    expect(line.normalizedErrorKind).toBeUndefined();
     expect(line.body).toBeUndefined();
   });
 
@@ -167,6 +170,7 @@ describe("createForwardedRequestLogger", () => {
       event: "response-summary",
       requestId: "req-summary",
       semanticState: "error",
+      providerTerminalKind: "semantic-error",
       executionClass: "subagent-like",
       transportStatus: 200,
       providerStatus: 529,
@@ -182,6 +186,7 @@ describe("createForwardedRequestLogger", () => {
       event: "response-summary",
       requestId: "req-invalid-stream",
       semanticState: "ended-empty",
+      providerTerminalKind: "ended-empty",
       normalizedErrorKind: "invalid-stream",
       semanticError: {
         status: 408,
@@ -189,6 +194,38 @@ describe("createForwardedRequestLogger", () => {
         message: "stream ended without a terminal success event",
       },
     });
+  });
+
+  it("marks completed summaries with an explicit provider terminal kind", async () => {
+    const stateDir = await createStateDir(tempDirs);
+    const logger = createForwardedRequestLogger({
+      config: { enabled: true },
+      stateDir,
+      logger: { info: () => {}, warn: () => {}, error: () => {} },
+    });
+
+    await logger?.appendResponseSummary({
+      requestId: "req-completed",
+      provider: "anthropic",
+      api: "anthropic-messages",
+      url: "https://example.test/v1/messages",
+      transportStatus: 200,
+      semanticState: "completed",
+      executionClass: "main-like",
+    });
+    await logger?.flush();
+
+    const [line] = await readLines(stateDir);
+    expect(line).toMatchObject({
+      event: "response-summary",
+      requestId: "req-completed",
+      semanticState: "completed",
+      providerTerminalKind: "completed",
+      executionClass: "main-like",
+      transportStatus: 200,
+    });
+    expect(line.providerStatus).toBeUndefined();
+    expect(line.normalizedErrorKind).toBeUndefined();
   });
 });
 
