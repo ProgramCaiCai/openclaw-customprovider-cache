@@ -1,6 +1,12 @@
 import { createPatchedFetch } from "./fetch-patch.js";
 import { resolveStableIdentity } from "./identity.js";
-import type { FetchRewriteRule, ProviderApi, ServiceParams } from "./types.js";
+import { createForwardedRequestLogger } from "./request-logging.js";
+import type {
+  FetchRewriteRule,
+  ForwardedRequestLogger,
+  ProviderApi,
+  ServiceParams,
+} from "./types.js";
 
 const SUPPORTED_APIS = new Set<ProviderApi>([
   "openai-responses",
@@ -37,6 +43,7 @@ function resolveRules(params: ServiceParams): FetchRewriteRule[] {
 export class SessionMetadataProxyService {
   private readonly params: ServiceParams;
   private originalFetch?: typeof globalThis.fetch;
+  private requestLogger?: ForwardedRequestLogger;
   private running = false;
 
   constructor(params: ServiceParams) {
@@ -52,15 +59,21 @@ export class SessionMetadataProxyService {
       logger: this.params.logger,
     });
     const rules = resolveRules(this.params);
+    this.requestLogger = createForwardedRequestLogger({
+      config: this.params.pluginConfig.requestLogging,
+      stateDir: this.params.stateDir,
+      logger: this.params.logger,
+    });
     this.originalFetch = globalThis.fetch;
     globalThis.fetch = createPatchedFetch({
       originalFetch: this.originalFetch,
+      requestLogger: this.requestLogger,
       rules,
       stableUserId: identity.userId,
       fallbackSessionId: identity.fallbackSessionId,
+      semanticFailureGating: this.params.pluginConfig.semanticFailureGating,
       openai: this.params.pluginConfig.openai,
       anthropic: this.params.pluginConfig.anthropic,
-      providers: this.params.pluginConfig.providers,
     });
     this.running = true;
     this.params.logger.info(
@@ -76,6 +89,8 @@ export class SessionMetadataProxyService {
       globalThis.fetch = this.originalFetch;
       this.originalFetch = undefined;
     }
+    await this.requestLogger?.flush();
+    this.requestLogger = undefined;
     this.running = false;
     this.params.logger.info("openclaw-customprovider-cache disabled");
   }

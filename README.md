@@ -20,6 +20,8 @@ That matters because upstream systems such as cache layers, prompt stores, or co
 - Matches configured custom providers by `baseUrl`, API adapter, endpoint path, and request shape
 - Completes missing OpenAI Responses cache/session identifiers
 - Injects missing Anthropic `metadata.user_id`
+- Converts semantic fake-success streams into real failures before the first visible token for covered providers
+- Escalates post-first-token semantic failures only for subagent-like requests detected by the `SOUL.md`-absence heuristic
 - Leaves auth handling to OpenClaw and forwards existing auth headers unchanged
 - Keeps request rewriting scoped to configured custom-provider traffic
 
@@ -66,6 +68,10 @@ The plugin works with defaults. Configure it under `plugins.entries.openclaw-cus
 ```json
 {
   "providers": ["custom-openai", "custom-anthropic"],
+  "semanticFailureGating": true,
+  "requestLogging": {
+    "enabled": false
+  },
   "openai": {
     "injectSessionIdHeader": true,
     "injectPromptCacheKey": true
@@ -80,12 +86,49 @@ The plugin works with defaults. Configure it under `plugins.entries.openclaw-cus
 Notes:
 
 - `providers`: empty means all configured providers with supported APIs
+- `semanticFailureGating`: defaults to `true`; set `false` to disable semantic stream inspection and let covered streams pass through untouched
+- `requestLogging.enabled`: when `true`, append sanitized JSONL request and response events for each forwarded plugin-handled request to `stateDir/forwarded-requests.jsonl`
+- `requestLogging.path`: optional custom log file path; relative paths resolve from the plugin `stateDir`
 - `anthropic.userId`: optional explicit `metadata.user_id`
 - `anthropic.userIdPrefix`: used when generating a stable installation-scoped identity
+
+## Semantic failure gating
+
+For covered streaming APIs, the plugin now distinguishes transport success from semantic success:
+
+- `semanticState: "unknown-stream"`: the upstream transport returned a stream-like `200`, but the plugin has not seen the terminal event yet
+- `semanticState: "completed"`: the stream reached a provider-specific success terminator
+- `semanticState: "error"`: the stream reported a semantic failure before any visible output
+- `semanticState: "error-after-partial"`: the stream produced visible output and later reported a semantic failure
+- `semanticState: "ended-empty"`: the stream ended without a success terminator
+- `semanticState: "aborted"`: the stream terminated abnormally before a success terminator
+
+When request logging is enabled, each covered stream can produce three JSONL records:
+
+- `request`
+- `response` with the transport-level `status`, `bodyState`, and initial `semanticState`
+- `response-summary` with the final `semanticState`, optional `semanticError`, and `executionClass`
+
+The execution class is a v1 heuristic based on prompt/bootstrap payloads:
+
+- If the payload includes `SOUL.md`, the request is treated as `main-like`
+- If the payload includes `AGENTS.md` and `TOOLS.md` but not `SOUL.md`, the request is treated as `subagent-like`
+- Anything else remains `unknown`
+
+That heuristic matters because the policy is intentionally split:
+
+- Pre-first-token semantic failures are upgraded to real stream errors for all covered streams
+- Post-first-token semantic failures are only upgraded to real stream errors for `subagent-like` requests
+- Main-like partial failures stay readable to the caller and are only logged as semantic failures
+
+## Current scope
+
+- Covered today: OpenAI Responses SSE and Anthropic Messages SSE
+- Not covered yet: Gemini semantic stream inspection and gating
 
 ## Verification
 
 ```bash
-pnpm test
-pnpm typecheck
+npm test
+npm run typecheck
 ```

@@ -14,6 +14,24 @@
           "minLength": 1
         }
       },
+      "semanticFailureGating": {
+        "type": "boolean",
+        "default": true
+      },
+      "requestLogging": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
       "openai": {
         "type": "object",
         "additionalProperties": false,

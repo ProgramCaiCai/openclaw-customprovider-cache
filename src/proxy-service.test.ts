@@ -1,4 +1,8 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SessionMetadataProxyService } from "./proxy-service.js";
 
@@ -8,9 +12,19 @@ async function readJson(response: Response): Promise<unknown> {
 
 describe("SessionMetadataProxyService", () => {
   const closers: Array<{ close: () => Promise<void> }> = [];
+  const tempDirs: string[] = [];
+  const nativeFetch = globalThis.fetch;
 
   afterEach(async () => {
     await Promise.all(closers.splice(0).map((entry) => entry.close()));
+    await Promise.all(
+      tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })),
+    );
+    globalThis.fetch = nativeFetch;
+  });
+
+  beforeEach(() => {
+    globalThis.fetch = createJsonEchoFetch();
   });
 
   it("patches global fetch without mutating configured provider baseUrl", async () => {
@@ -29,6 +43,11 @@ describe("SessionMetadataProxyService", () => {
       config: cfg,
       pluginConfig: {
         providers: [],
+        semanticFailureGating: true,
+        requestLogging: {
+          enabled: false,
+          path: undefined,
+        },
         openai: {
           injectPromptCacheKey: true,
           injectSessionIdHeader: true,
@@ -55,15 +74,12 @@ describe("SessionMetadataProxyService", () => {
   });
 
   it("rewrites requests sent to configured provider baseUrls without reading API keys", async () => {
-    const upstream = await createJsonEchoServer();
-    closers.push(upstream);
-
     const cfg = {
       models: {
         providers: {
           anthropic: {
             api: "anthropic-messages",
-            baseUrl: upstream.baseUrl,
+            baseUrl: "https://anthropic.example.test",
             models: [],
           },
         },
@@ -73,6 +89,11 @@ describe("SessionMetadataProxyService", () => {
       config: cfg,
       pluginConfig: {
         providers: [],
+        semanticFailureGating: true,
+        requestLogging: {
+          enabled: false,
+          path: undefined,
+        },
         openai: {
           injectPromptCacheKey: true,
           injectSessionIdHeader: true,
@@ -110,16 +131,14 @@ describe("SessionMetadataProxyService", () => {
     expect(payload.body.metadata?.user_id).toBe("tenant-user");
   });
 
-  it("does not patch providers configured for openai-completions", async () => {
-    const upstream = await createJsonEchoServer();
-    closers.push(upstream);
-
+  it("does not write request logs when logging is disabled by default", async () => {
+    const stateDir = await createStateDir(tempDirs);
     const cfg = {
       models: {
         providers: {
           openai: {
-            api: "openai-completions",
-            baseUrl: upstream.baseUrl,
+            api: "openai-responses",
+            baseUrl: "https://openai.example.test/v1",
             models: [],
           },
         },
@@ -129,6 +148,479 @@ describe("SessionMetadataProxyService", () => {
       config: cfg,
       pluginConfig: {
         providers: [],
+        semanticFailureGating: true,
+        requestLogging: {
+          enabled: false,
+          path: undefined,
+        },
+        openai: {
+          injectPromptCacheKey: true,
+          injectSessionIdHeader: true,
+        },
+        anthropic: {
+          injectMetadataUserId: true,
+          userId: undefined,
+          userIdPrefix: "openclaw",
+        },
+      },
+      stateDir,
+      logger: { info: () => {}, warn: () => {}, error: () => {} },
+    });
+    closers.push({ close: () => service.stop() });
+
+    await service.start();
+
+    await fetch(`${cfg.models.providers.openai.baseUrl}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-5.2",
+        input: [{ role: "user", content: "hello" }],
+      }),
+    });
+
+    await service.stop();
+
+    await expect(
+      readFile(join(stateDir, "forwarded-requests.jsonl"), "utf8"),
+    ).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("writes correlated request and response events when logging is enabled", async () => {
+    const stateDir = await createStateDir(tempDirs);
+    const cfg = {
+      models: {
+        providers: {
+          openai: {
+            api: "openai-responses",
+            baseUrl: "https://openai.example.test/v1",
+            models: [],
+          },
+        },
+      },
+    };
+    const service = new SessionMetadataProxyService({
+      config: cfg,
+      pluginConfig: {
+        providers: [],
+        semanticFailureGating: true,
+        requestLogging: {
+          enabled: true,
+          path: undefined,
+        },
+        openai: {
+          injectPromptCacheKey: true,
+          injectSessionIdHeader: true,
+        },
+        anthropic: {
+          injectMetadataUserId: true,
+          userId: undefined,
+          userIdPrefix: "openclaw",
+        },
+      },
+      stateDir,
+      logger: { info: () => {}, warn: () => {}, error: () => {} },
+    });
+    closers.push({ close: () => service.stop() });
+
+    await service.start();
+
+    await fetch(`${cfg.models.providers.openai.baseUrl}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-5.2",
+        input: [{ role: "user", content: "hello" }],
+      }),
+    });
+
+    await service.stop();
+
+    const lines = (await readFile(join(stateDir, "forwarded-requests.jsonl"), "utf8"))
+      .trim()
+      .split("\n");
+    expect(lines).toHaveLength(2);
+
+    const requestRecord = JSON.parse(lines[0] ?? "null") as {
+      event: string;
+      requestId: string;
+      provider: string;
+      api: string;
+      url: string;
+      method: string;
+      headers: Record<string, string>;
+      body: Record<string, unknown>;
+      timestamp: string;
+    };
+
+    const responseRecord = JSON.parse(lines[1] ?? "null") as {
+      event: string;
+      requestId: string;
+      provider: string;
+      api: string;
+      url: string;
+      status: number;
+      headers: Record<string, string>;
+      body?: {
+        method?: string;
+        url?: string;
+      };
+      bodyState: string;
+      truncated: boolean;
+      timestamp: string;
+    };
+
+    expect(requestRecord.event).toBe("request");
+    expect(requestRecord.requestId).toBeTypeOf("string");
+    expect(requestRecord.provider).toBe("openai");
+    expect(requestRecord.api).toBe("openai-responses");
+    expect(requestRecord.url).toBe(`${cfg.models.providers.openai.baseUrl}/responses`);
+    expect(requestRecord.method).toBe("POST");
+    expect(requestRecord.timestamp).toBeTypeOf("string");
+    expect(requestRecord.headers.session_id).toMatch(/^openclaw-session-/);
+    expect(requestRecord.headers["x-session-id"]).toBe(requestRecord.headers.session_id);
+    expect(requestRecord.body).toMatchObject({
+      model: "gpt-5.2",
+      prompt_cache_key: requestRecord.headers.session_id,
+    });
+
+    expect(responseRecord.event).toBe("response");
+    expect(responseRecord.requestId).toBe(requestRecord.requestId);
+    expect(responseRecord.provider).toBe("openai");
+    expect(responseRecord.api).toBe("openai-responses");
+    expect(responseRecord.url).toBe(requestRecord.url);
+    expect(responseRecord.status).toBe(200);
+    expect(responseRecord.timestamp).toBeTypeOf("string");
+    expect(responseRecord.headers["content-type"]).toBe("application/json");
+    expect(responseRecord.bodyState).toBe("captured");
+    expect(responseRecord.truncated).toBe(false);
+    expect(responseRecord.body).toMatchObject({
+      method: "POST",
+      url: `${cfg.models.providers.openai.baseUrl}/responses`,
+    });
+  });
+
+  it("redacts secrets in logged headers and body", async () => {
+    const stateDir = await createStateDir(tempDirs);
+    const cfg = {
+      models: {
+        providers: {
+          openai: {
+            api: "openai-responses",
+            baseUrl: "https://openai.example.test/v1",
+            models: [],
+          },
+        },
+      },
+    };
+    const service = new SessionMetadataProxyService({
+      config: cfg,
+      pluginConfig: {
+        providers: [],
+        semanticFailureGating: true,
+        requestLogging: {
+          enabled: true,
+          path: undefined,
+        },
+        openai: {
+          injectPromptCacheKey: true,
+          injectSessionIdHeader: true,
+        },
+        anthropic: {
+          injectMetadataUserId: true,
+          userId: undefined,
+          userIdPrefix: "openclaw",
+        },
+      },
+      stateDir,
+      logger: { info: () => {}, warn: () => {}, error: () => {} },
+    });
+    closers.push({ close: () => service.stop() });
+
+    await service.start();
+
+    await fetch(`${cfg.models.providers.openai.baseUrl}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret",
+        "x-api-key": "sk-live-secret",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-5.2",
+        input: [{ role: "user", content: "hello" }],
+        api_key: "sk-body-secret",
+        nested: {
+          access_token: "Bearer nested-secret",
+          safe: "keep-me",
+        },
+      }),
+    });
+
+    await service.stop();
+
+    const [requestLine, responseLine] = (await readFile(join(stateDir, "forwarded-requests.jsonl"), "utf8"))
+      .trim()
+      .split("\n");
+    const requestRecord = JSON.parse(requestLine ?? "null") as {
+      headers: Record<string, string>;
+      body: {
+        api_key?: string;
+        nested?: {
+          access_token?: string;
+          safe?: string;
+        };
+      };
+    };
+    const responseRecord = JSON.parse(responseLine ?? "null") as {
+      headers: Record<string, string>;
+      body?: {
+        headers?: Record<string, string>;
+        body?: {
+          api_key?: string;
+          nested?: {
+            access_token?: string;
+            safe?: string;
+          };
+        };
+      };
+    };
+
+    expect(requestRecord.headers.authorization).toBe("[REDACTED]");
+    expect(requestRecord.headers["x-api-key"]).toBe("[REDACTED]");
+    expect(requestRecord.body.api_key).toBe("[REDACTED]");
+    expect(requestRecord.body.nested?.access_token).toBe("[REDACTED]");
+    expect(requestRecord.body.nested?.safe).toBe("keep-me");
+    expect(responseRecord.headers["x-api-key"]).toBe("[REDACTED]");
+    expect(responseRecord.body?.headers?.authorization).toBe("[REDACTED]");
+    expect(responseRecord.body?.headers?.["x-api-key"]).toBe("[REDACTED]");
+    expect(responseRecord.body?.body?.api_key).toBe("[REDACTED]");
+    expect(responseRecord.body?.body?.nested?.access_token).toBe("[REDACTED]");
+    expect(responseRecord.body?.body?.nested?.safe).toBe("keep-me");
+  });
+
+  it("keeps stream-like downstream responses readable while annotating body capture", async () => {
+    const encoder = new TextEncoder();
+    const stateDir = await createStateDir(tempDirs);
+    const cfg = {
+      models: {
+        providers: {
+          openai: {
+            api: "openai-responses",
+            baseUrl: "https://openai.example.test/v1",
+            models: [],
+          },
+        },
+      },
+    };
+    globalThis.fetch = vi.fn(async () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode(
+              'data: {"type":"response.output_text.delta","delta":"hello"}\n\n',
+            ),
+          );
+          controller.enqueue(encoder.encode('data: {"type":"response.completed"}\n\n'));
+          controller.close();
+        },
+      });
+      return new Response(body, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    });
+    const service = new SessionMetadataProxyService({
+      config: cfg,
+      pluginConfig: {
+        providers: [],
+        semanticFailureGating: true,
+        requestLogging: {
+          enabled: true,
+          path: undefined,
+        },
+        openai: {
+          injectPromptCacheKey: true,
+          injectSessionIdHeader: true,
+        },
+        anthropic: {
+          injectMetadataUserId: true,
+          userId: undefined,
+          userIdPrefix: "openclaw",
+        },
+      },
+      stateDir,
+      logger: { info: () => {}, warn: () => {}, error: () => {} },
+    });
+    closers.push({ close: () => service.stop() });
+
+    await service.start();
+
+    const response = await fetch(`${cfg.models.providers.openai.baseUrl}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-5.2",
+        input: [{ role: "user", content: "hello" }],
+      }),
+    });
+
+    expect(await response.text()).toBe(
+      'data: {"type":"response.output_text.delta","delta":"hello"}\n\n' +
+        'data: {"type":"response.completed"}\n\n',
+    );
+
+    await service.stop();
+
+    const [, responseLine, summaryLine] = (await readFile(
+      join(stateDir, "forwarded-requests.jsonl"),
+      "utf8",
+    ))
+      .trim()
+      .split("\n");
+    const responseRecord = JSON.parse(responseLine ?? "null") as {
+      status: number;
+      body?: unknown;
+      bodyState: string;
+      semanticState?: string;
+      truncated: boolean;
+    };
+    const summaryRecord = JSON.parse(summaryLine ?? "null") as {
+      event: string;
+      semanticState: string;
+    };
+
+    expect(responseRecord.status).toBe(200);
+    expect(responseRecord.bodyState).toBe("stream-like");
+    expect(responseRecord.semanticState).toBe("unknown-stream");
+    expect(responseRecord.truncated).toBe(false);
+    expect(responseRecord.body).toBeUndefined();
+    expect(summaryRecord.event).toBe("response-summary");
+    expect(summaryRecord.semanticState).toBe("completed");
+  });
+
+  it("passes covered streams through untouched when semantic failure gating is disabled", async () => {
+    const encoder = new TextEncoder();
+    const stateDir = await createStateDir(tempDirs);
+    const cfg = {
+      models: {
+        providers: {
+          openai: {
+            api: "openai-responses",
+            baseUrl: "https://openai.example.test/v1",
+            models: [],
+          },
+        },
+      },
+    };
+    globalThis.fetch = vi.fn(async () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode(
+              'data: {"type":"response.failed","response":{"status":500,"error":{"code":"server_error","message":"late failure"}}}\n\n',
+            ),
+          );
+          controller.close();
+        },
+      });
+      return new Response(body, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    });
+    const service = new SessionMetadataProxyService({
+      config: cfg,
+      pluginConfig: {
+        providers: [],
+        semanticFailureGating: false,
+        requestLogging: {
+          enabled: true,
+          path: undefined,
+        },
+        openai: {
+          injectPromptCacheKey: true,
+          injectSessionIdHeader: true,
+        },
+        anthropic: {
+          injectMetadataUserId: true,
+          userId: undefined,
+          userIdPrefix: "openclaw",
+        },
+      },
+      stateDir,
+      logger: { info: () => {}, warn: () => {}, error: () => {} },
+    });
+    closers.push({ close: () => service.stop() });
+
+    await service.start();
+
+    const response = await fetch(`${cfg.models.providers.openai.baseUrl}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-5.2",
+        input: [{ role: "user", content: "AGENTS.md TOOLS.md" }],
+      }),
+    });
+
+    expect(await response.text()).toBe(
+      'data: {"type":"response.failed","response":{"status":500,"error":{"code":"server_error","message":"late failure"}}}\n\n',
+    );
+
+    await service.stop();
+
+    const lines = (await readFile(join(stateDir, "forwarded-requests.jsonl"), "utf8"))
+      .trim()
+      .split("\n");
+    expect(lines).toHaveLength(2);
+
+    const responseRecord = JSON.parse(lines[1] ?? "null") as {
+      event: string;
+      bodyState: string;
+      semanticState?: string;
+    };
+
+    expect(responseRecord.event).toBe("response");
+    expect(responseRecord.bodyState).toBe("stream-like");
+    expect(responseRecord.semanticState).toBe("unknown-stream");
+  });
+
+  it("does not patch providers configured for openai-completions", async () => {
+    const cfg = {
+      models: {
+        providers: {
+          openai: {
+            api: "openai-completions",
+            baseUrl: "https://openai.example.test",
+            models: [],
+          },
+        },
+      },
+    };
+    const service = new SessionMetadataProxyService({
+      config: cfg,
+      pluginConfig: {
+        providers: [],
+        semanticFailureGating: true,
+        requestLogging: {
+          enabled: false,
+          path: undefined,
+        },
         openai: {
           injectPromptCacheKey: true,
           injectSessionIdHeader: true,
@@ -168,41 +660,36 @@ describe("SessionMetadataProxyService", () => {
   });
 });
 
-async function createJsonEchoServer(): Promise<{
-  baseUrl: string;
-  close: () => Promise<void>;
-}> {
-  const http = await import("node:http");
+async function createStateDir(tempDirs: string[]): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "openclaw-customprovider-cache-"));
+  tempDirs.push(dir);
+  return dir;
+}
 
-  const server = http.createServer(async (req, res) => {
-    const chunks: Buffer[] = [];
-    for await (const chunk of req) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    }
-    const bodyText = Buffer.concat(chunks).toString("utf8");
-    res.statusCode = 200;
-    res.setHeader("content-type", "application/json");
-    res.end(
+function createJsonEchoFetch(): typeof globalThis.fetch {
+  return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const headers = init?.headers ? Object.fromEntries(new Headers(init.headers).entries()) : {};
+    const bodyText =
+      init?.body instanceof Uint8Array
+        ? Buffer.from(init.body).toString("utf8")
+        : typeof init?.body === "string"
+          ? init.body
+          : undefined;
+
+    return new Response(
       JSON.stringify({
-        method: req.method,
-        url: req.url,
-        headers: req.headers,
+        method: init?.method ?? (input instanceof Request ? input.method : "GET"),
+        url: typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url,
+        headers,
         body: bodyText ? JSON.parse(bodyText) : undefined,
       }),
+      {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": "sk-upstream-secret",
+        },
+      },
     );
   });
-
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  if (!address || typeof address === "string") {
-    throw new Error("echo server missing address");
-  }
-
-  return {
-    baseUrl: `http://127.0.0.1:${address.port}`,
-    close: () =>
-      new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
-      ),
-  };
 }

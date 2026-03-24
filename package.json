@@ -21,6 +21,8 @@
     "src/fetch-patch.ts",
     "src/identity.ts",
     "src/proxy-rewrite.ts",
+    "src/request-logging.ts",
+    "src/stream-inspector.ts",
     "src/proxy-service.ts",
     "src/types.ts"
   ],

@@ -27,8 +27,15 @@ export type PluginLogger = {
   error: (message: string) => void;
 };
 
+export type RequestLoggingConfig = {
+  enabled: boolean;
+  path?: string;
+};
+
 export type NormalizedPluginConfig = {
   providers: string[];
+  semanticFailureGating: boolean;
+  requestLogging: RequestLoggingConfig;
   openai: {
     injectSessionIdHeader: boolean;
     injectPromptCacheKey: boolean;
@@ -56,6 +63,111 @@ export type ServiceParams = {
   pluginConfig: NormalizedPluginConfig;
   stateDir: string;
   logger: PluginLogger;
+};
+
+export type SemanticState =
+  | "unknown-stream"
+  | "completed"
+  | "error"
+  | "ended-empty"
+  | "aborted"
+  | "error-after-partial";
+
+export type RequestExecutionClass = "main-like" | "subagent-like" | "unknown";
+
+export type SemanticFailureInfo = {
+  status?: number;
+  code?: string;
+  message: string;
+  providerStatus?: number;
+};
+
+export type StreamInspectionResult = {
+  semanticState: Exclude<SemanticState, "unknown-stream">;
+  semanticError?: SemanticFailureInfo;
+  sawVisibleOutput: boolean;
+};
+
+export type ForwardedRequestLogRecord = {
+  event: "request";
+  requestId: string;
+  timestamp: string;
+  provider: string;
+  api: ProviderApi;
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  body?: unknown;
+};
+
+export type ForwardedResponseBodyState =
+  | "captured"
+  | "truncated"
+  | "stream-like"
+  | "binary"
+  | "unavailable";
+
+export type ForwardedResponseLogRecord = {
+  event: "response";
+  requestId: string;
+  timestamp: string;
+  provider: string;
+  api: ProviderApi;
+  url: string;
+  status: number;
+  headers: Record<string, string>;
+  body?: unknown;
+  bodyState: ForwardedResponseBodyState;
+  truncated: boolean;
+  semanticState?: SemanticState;
+  semanticError?: SemanticFailureInfo;
+  executionClass?: RequestExecutionClass;
+};
+
+export type ForwardedResponseSummaryLogRecord = {
+  event: "response-summary";
+  requestId: string;
+  timestamp: string;
+  provider: string;
+  api: ProviderApi;
+  url: string;
+  semanticState: Exclude<SemanticState, "unknown-stream">;
+  semanticError?: SemanticFailureInfo;
+  executionClass?: RequestExecutionClass;
+  transportStatus?: number;
+};
+
+export type ForwardedRequestLogger = {
+  appendRequest: (record: {
+    requestId: string;
+    provider: string;
+    api: ProviderApi;
+    url: string;
+    method: string;
+    headers: Headers;
+    bodyBuffer: Buffer;
+  }) => Promise<void>;
+  appendResponse: (record: {
+    requestId: string;
+    provider: string;
+    api: ProviderApi;
+    url: string;
+    response: Response;
+    semanticState?: SemanticState;
+    semanticError?: SemanticFailureInfo;
+    executionClass?: RequestExecutionClass;
+  }) => Promise<void>;
+  appendResponseSummary: (record: {
+    requestId: string;
+    provider: string;
+    api: ProviderApi;
+    url: string;
+    semanticState: Exclude<SemanticState, "unknown-stream">;
+    semanticError?: SemanticFailureInfo;
+    executionClass?: RequestExecutionClass;
+    transportStatus?: number;
+  }) => Promise<void>;
+  flush: () => Promise<void>;
 };
 
 export type ServiceContext = {

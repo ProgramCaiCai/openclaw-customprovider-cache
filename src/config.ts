@@ -38,12 +38,23 @@ function readStringArray(value: unknown, field: string): string[] {
 
 export function normalizePluginConfig(raw: unknown): NormalizedPluginConfig {
   const value = raw === undefined ? {} : asRecord(raw, "pluginConfig");
+  const requestLoggingRaw =
+    value.requestLogging === undefined ? {} : asRecord(value.requestLogging, "requestLogging");
   const openaiRaw = value.openai === undefined ? {} : asRecord(value.openai, "openai");
   const anthropicRaw =
     value.anthropic === undefined ? {} : asRecord(value.anthropic, "anthropic");
 
   return {
     providers: [...new Set(readStringArray(value.providers, "providers"))],
+    semanticFailureGating: readBoolean(
+      value.semanticFailureGating,
+      "semanticFailureGating",
+      true,
+    ),
+    requestLogging: {
+      enabled: readBoolean(requestLoggingRaw.enabled, "requestLogging.enabled", false),
+      path: readOptionalString(requestLoggingRaw.path, "requestLogging.path"),
+    },
     openai: {
       injectSessionIdHeader: readBoolean(
         openaiRaw.injectSessionIdHeader,
