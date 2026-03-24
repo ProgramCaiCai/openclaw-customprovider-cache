@@ -32,9 +32,20 @@ export type RequestLoggingConfig = {
   path?: string;
 };
 
+export type RetrySteeringVerdict =
+  | "none"
+  | "poisoned-child-result"
+  | "empty-child-result";
+
+export type RetrySteeringReason =
+  | "raw-child-result-dump"
+  | "child-completion-without-deliverable-summary"
+  | "child-completion-empty-output";
+
 export type NormalizedPluginConfig = {
   providers: string[];
   semanticFailureGating: boolean;
+  retrySteeringForPoisonedChildResults: boolean;
   requestLogging: RequestLoggingConfig;
   openai: {
     injectSessionIdHeader: boolean;
@@ -98,6 +109,10 @@ export type ForwardedRequestLogRecord = {
   method: string;
   headers: Record<string, string>;
   body?: unknown;
+  executionClass?: RequestExecutionClass;
+  retrySteeringVerdict?: Exclude<RetrySteeringVerdict, "none">;
+  retrySteeringReason?: RetrySteeringReason;
+  syntheticFailure?: boolean;
 };
 
 export type ForwardedResponseBodyState =
@@ -122,6 +137,9 @@ export type ForwardedResponseLogRecord = {
   semanticState?: SemanticState;
   semanticError?: SemanticFailureInfo;
   executionClass?: RequestExecutionClass;
+  retrySteeringVerdict?: Exclude<RetrySteeringVerdict, "none">;
+  retrySteeringReason?: RetrySteeringReason;
+  syntheticFailure?: boolean;
 };
 
 export type ForwardedResponseSummaryLogRecord = {
@@ -135,6 +153,9 @@ export type ForwardedResponseSummaryLogRecord = {
   semanticError?: SemanticFailureInfo;
   executionClass?: RequestExecutionClass;
   transportStatus?: number;
+  retrySteeringVerdict?: Exclude<RetrySteeringVerdict, "none">;
+  retrySteeringReason?: RetrySteeringReason;
+  syntheticFailure?: boolean;
 };
 
 export type ForwardedRequestLogger = {
@@ -146,6 +167,10 @@ export type ForwardedRequestLogger = {
     method: string;
     headers: Headers;
     bodyBuffer: Buffer;
+    executionClass?: RequestExecutionClass;
+    retrySteeringVerdict?: Exclude<RetrySteeringVerdict, "none">;
+    retrySteeringReason?: RetrySteeringReason;
+    syntheticFailure?: boolean;
   }) => Promise<void>;
   appendResponse: (record: {
     requestId: string;
@@ -156,6 +181,9 @@ export type ForwardedRequestLogger = {
     semanticState?: SemanticState;
     semanticError?: SemanticFailureInfo;
     executionClass?: RequestExecutionClass;
+    retrySteeringVerdict?: Exclude<RetrySteeringVerdict, "none">;
+    retrySteeringReason?: RetrySteeringReason;
+    syntheticFailure?: boolean;
   }) => Promise<void>;
   appendResponseSummary: (record: {
     requestId: string;
@@ -166,6 +194,9 @@ export type ForwardedRequestLogger = {
     semanticError?: SemanticFailureInfo;
     executionClass?: RequestExecutionClass;
     transportStatus?: number;
+    retrySteeringVerdict?: Exclude<RetrySteeringVerdict, "none">;
+    retrySteeringReason?: RetrySteeringReason;
+    syntheticFailure?: boolean;
   }) => Promise<void>;
   flush: () => Promise<void>;
 };

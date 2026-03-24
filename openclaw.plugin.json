@@ -18,6 +18,10 @@
         "type": "boolean",
         "default": true
       },
+      "retrySteeringForPoisonedChildResults": {
+        "type": "boolean",
+        "default": true
+      },
       "requestLogging": {
         "type": "object",
         "additionalProperties": false,

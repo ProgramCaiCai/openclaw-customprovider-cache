@@ -7,6 +7,7 @@ describe("normalizePluginConfig", () => {
     expect(normalizePluginConfig(undefined)).toEqual({
       providers: [],
       semanticFailureGating: true,
+      retrySteeringForPoisonedChildResults: true,
       requestLogging: {
         enabled: false,
         path: undefined,
@@ -50,6 +51,17 @@ describe("normalizePluginConfig", () => {
       }),
     ).toMatchObject({
       semanticFailureGating: false,
+    });
+  });
+
+  it("allows disabling only the request-side retry-steering stopgap explicitly", () => {
+    expect(
+      normalizePluginConfig({
+        retrySteeringForPoisonedChildResults: false,
+      }),
+    ).toMatchObject({
+      semanticFailureGating: true,
+      retrySteeringForPoisonedChildResults: false,
     });
   });
 });

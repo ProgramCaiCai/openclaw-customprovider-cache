@@ -51,6 +51,11 @@ export function normalizePluginConfig(raw: unknown): NormalizedPluginConfig {
       "semanticFailureGating",
       true,
     ),
+    retrySteeringForPoisonedChildResults: readBoolean(
+      value.retrySteeringForPoisonedChildResults,
+      "retrySteeringForPoisonedChildResults",
+      true,
+    ),
     requestLogging: {
       enabled: readBoolean(requestLoggingRaw.enabled, "requestLogging.enabled", false),
       path: readOptionalString(requestLoggingRaw.path, "requestLogging.path"),

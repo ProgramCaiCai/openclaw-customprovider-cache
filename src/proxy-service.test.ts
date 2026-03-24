@@ -44,6 +44,7 @@ describe("SessionMetadataProxyService", () => {
       pluginConfig: {
         providers: [],
         semanticFailureGating: true,
+        retrySteeringForPoisonedChildResults: true,
         requestLogging: {
           enabled: false,
           path: undefined,
@@ -90,6 +91,7 @@ describe("SessionMetadataProxyService", () => {
       pluginConfig: {
         providers: [],
         semanticFailureGating: true,
+        retrySteeringForPoisonedChildResults: true,
         requestLogging: {
           enabled: false,
           path: undefined,
@@ -149,6 +151,7 @@ describe("SessionMetadataProxyService", () => {
       pluginConfig: {
         providers: [],
         semanticFailureGating: true,
+        retrySteeringForPoisonedChildResults: true,
         requestLogging: {
           enabled: false,
           path: undefined,
@@ -209,6 +212,7 @@ describe("SessionMetadataProxyService", () => {
       pluginConfig: {
         providers: [],
         semanticFailureGating: true,
+        retrySteeringForPoisonedChildResults: true,
         requestLogging: {
           enabled: true,
           path: undefined,
@@ -326,6 +330,7 @@ describe("SessionMetadataProxyService", () => {
       pluginConfig: {
         providers: [],
         semanticFailureGating: true,
+        retrySteeringForPoisonedChildResults: true,
         requestLogging: {
           enabled: true,
           path: undefined,
@@ -443,6 +448,7 @@ describe("SessionMetadataProxyService", () => {
       pluginConfig: {
         providers: [],
         semanticFailureGating: true,
+        retrySteeringForPoisonedChildResults: true,
         requestLogging: {
           enabled: true,
           path: undefined,
@@ -545,6 +551,7 @@ describe("SessionMetadataProxyService", () => {
       pluginConfig: {
         providers: [],
         semanticFailureGating: false,
+        retrySteeringForPoisonedChildResults: true,
         requestLogging: {
           enabled: true,
           path: undefined,
@@ -617,6 +624,7 @@ describe("SessionMetadataProxyService", () => {
       pluginConfig: {
         providers: [],
         semanticFailureGating: true,
+        retrySteeringForPoisonedChildResults: true,
         requestLogging: {
           enabled: false,
           path: undefined,
@@ -657,6 +665,107 @@ describe("SessionMetadataProxyService", () => {
     expect(payload.headers.authorization).toBe("Bearer test-secret");
     expect(payload.headers.session_id).toBeUndefined();
     expect(payload.body.prompt_cache_key).toBeUndefined();
+  });
+
+  it("fails suspicious retry-steering parent-consumption requests before upstream fetch", async () => {
+    const stateDir = await createStateDir(tempDirs);
+    const upstreamFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ unexpected: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    globalThis.fetch = upstreamFetch;
+    const cfg = {
+      models: {
+        providers: {
+          openai: {
+            api: "openai-responses",
+            baseUrl: "https://openai.example.test/v1",
+            models: [],
+          },
+        },
+      },
+    };
+    const service = new SessionMetadataProxyService({
+      config: cfg,
+      pluginConfig: {
+        providers: [],
+        semanticFailureGating: true,
+        retrySteeringForPoisonedChildResults: true,
+        requestLogging: {
+          enabled: true,
+          path: undefined,
+        },
+        openai: {
+          injectPromptCacheKey: true,
+          injectSessionIdHeader: true,
+        },
+        anthropic: {
+          injectMetadataUserId: true,
+          userId: undefined,
+          userIdPrefix: "openclaw",
+        },
+      },
+      stateDir,
+      logger: { info: () => {}, warn: () => {}, error: () => {} },
+    });
+    closers.push({ close: () => service.stop() });
+
+    await service.start();
+
+    const response = await fetch(`${cfg.models.providers.openai.baseUrl}/responses`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-5.2",
+        input: [
+          {
+            role: "user",
+            content:
+              "SOUL.md AGENTS.md TOOLS.md\nSubagent completed successfully.\n```md\n# HEARTBEAT.md\nstatus: green\n```",
+          },
+        ],
+      }),
+    });
+
+    expect(upstreamFetch).not.toHaveBeenCalled();
+    expect(response.status).toBe(408);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: "RETRY_STEERING_POISONED_CHILD_RESULT",
+        retrySteeringVerdict: "poisoned-child-result",
+      },
+    });
+
+    await service.stop();
+
+    const lines = (await readFile(join(stateDir, "forwarded-requests.jsonl"), "utf8"))
+      .trim()
+      .split("\n");
+    expect(lines).toHaveLength(3);
+
+    const requestRecord = JSON.parse(lines[0] ?? "null") as {
+      executionClass?: string;
+      retrySteeringVerdict?: string;
+      retrySteeringReason?: string;
+    };
+    const summaryRecord = JSON.parse(lines[2] ?? "null") as {
+      event: string;
+      transportStatus?: number;
+      executionClass?: string;
+      retrySteeringVerdict?: string;
+    };
+
+    expect(requestRecord.executionClass).toBe("main-like");
+    expect(requestRecord.retrySteeringVerdict).toBe("poisoned-child-result");
+    expect(requestRecord.retrySteeringReason).toBe("raw-child-result-dump");
+    expect(summaryRecord.event).toBe("response-summary");
+    expect(summaryRecord.transportStatus).toBe(408);
+    expect(summaryRecord.executionClass).toBe("main-like");
+    expect(summaryRecord.retrySteeringVerdict).toBe("poisoned-child-result");
   });
 });
 

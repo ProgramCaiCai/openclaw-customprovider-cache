@@ -93,6 +93,8 @@ describe("createForwardedRequestLogger", () => {
       transportStatus: 200,
       semanticState: "error",
       executionClass: "subagent-like",
+      retrySteeringVerdict: "poisoned-child-result",
+      retrySteeringReason: "raw-child-result-dump",
       semanticError: {
         status: 429,
         code: "RATE_LIMIT",
@@ -108,12 +110,75 @@ describe("createForwardedRequestLogger", () => {
       requestId: "req-summary",
       semanticState: "error",
       executionClass: "subagent-like",
+      retrySteeringVerdict: "poisoned-child-result",
+      retrySteeringReason: "raw-child-result-dump",
       transportStatus: 200,
       semanticError: {
         status: 429,
         code: "RATE_LIMIT",
         message: "rate limited upstream",
         providerStatus: 529,
+      },
+    });
+  });
+
+  it("writes request-side stopgap fields on request and response-summary records", async () => {
+    const stateDir = await createStateDir(tempDirs);
+    const logger = createForwardedRequestLogger({
+      config: { enabled: true },
+      stateDir,
+      logger: { info: () => {}, warn: () => {}, error: () => {} },
+    });
+
+    await logger?.appendRequest({
+      requestId: "req-stopgap",
+      provider: "openai",
+      api: "openai-responses",
+      url: "https://example.test/v1/responses",
+      method: "POST",
+      headers: new Headers({ "content-type": "application/json" }),
+      bodyBuffer: Buffer.from('{"input":"hello"}'),
+      executionClass: "main-like",
+      retrySteeringVerdict: "poisoned-child-result",
+      retrySteeringReason: "raw-child-result-dump",
+    });
+    await logger?.appendResponseSummary({
+      requestId: "req-stopgap",
+      provider: "openai",
+      api: "openai-responses",
+      url: "https://example.test/v1/responses",
+      transportStatus: 408,
+      semanticState: "error",
+      executionClass: "main-like",
+      retrySteeringVerdict: "poisoned-child-result",
+      retrySteeringReason: "raw-child-result-dump",
+      semanticError: {
+        status: 408,
+        code: "RETRY_STEERING_POISONED_CHILD_RESULT",
+        message: "Suspicious child-completion payload detected before upstream generation.",
+      },
+    });
+    await logger?.flush();
+
+    const [requestLine, summaryLine] = await readLines(stateDir);
+    expect(requestLine).toMatchObject({
+      event: "request",
+      requestId: "req-stopgap",
+      executionClass: "main-like",
+      retrySteeringVerdict: "poisoned-child-result",
+      retrySteeringReason: "raw-child-result-dump",
+    });
+    expect(summaryLine).toMatchObject({
+      event: "response-summary",
+      requestId: "req-stopgap",
+      executionClass: "main-like",
+      retrySteeringVerdict: "poisoned-child-result",
+      retrySteeringReason: "raw-child-result-dump",
+      transportStatus: 408,
+      semanticError: {
+        status: 408,
+        code: "RETRY_STEERING_POISONED_CHILD_RESULT",
+        message: "Suspicious child-completion payload detected before upstream generation.",
       },
     });
   });

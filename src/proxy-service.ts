@@ -72,8 +72,10 @@ export class SessionMetadataProxyService {
       stableUserId: identity.userId,
       fallbackSessionId: identity.fallbackSessionId,
       semanticFailureGating: this.params.pluginConfig.semanticFailureGating,
+      retrySteeringForPoisonedChildResults: this.params.pluginConfig.retrySteeringForPoisonedChildResults,
       openai: this.params.pluginConfig.openai,
       anthropic: this.params.pluginConfig.anthropic,
+      logger: this.params.logger,
     });
     this.running = true;
     this.params.logger.info(

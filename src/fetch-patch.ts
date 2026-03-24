@@ -1,11 +1,15 @@
 import { randomUUID } from "node:crypto";
 
+import { detectRetrySteeringNeed } from "./retry-steering.js";
 import { createStreamTracker } from "./stream-inspector.js";
 import type {
   FetchRewriteRule,
   ForwardedRequestLogger,
   NormalizedPluginConfig,
+  PluginLogger,
   RequestExecutionClass,
+  RetrySteeringReason,
+  RetrySteeringVerdict,
   SemanticFailureInfo,
   StreamInspectionResult,
 } from "./types.js";
@@ -171,15 +175,31 @@ export function extractPromptishText(
   return parts.join("\n");
 }
 
+export function analyzeExecutionPrompt(promptText: string): {
+  executionClass: RequestExecutionClass;
+  hasSoulBootstrap: boolean;
+  hasAgentsBootstrap: boolean;
+  hasToolsBootstrap: boolean;
+} {
+  const hasSoulBootstrap = /SOUL\.md/i.test(promptText);
+  const hasAgentsBootstrap = /AGENTS\.md/i.test(promptText);
+  const hasToolsBootstrap = /TOOLS\.md/i.test(promptText);
+
+  return {
+    executionClass: hasSoulBootstrap
+      ? "main-like"
+      : hasAgentsBootstrap && hasToolsBootstrap
+        ? "subagent-like"
+        : "unknown",
+    hasSoulBootstrap,
+    hasAgentsBootstrap,
+    hasToolsBootstrap,
+  };
+}
+
 export function classifyExecutionClass(promptText: string): RequestExecutionClass {
   // This v1 heuristic intentionally keys off SOUL.md absence because current subagent flows inject AGENTS.md and TOOLS.md without SOUL.md.
-  if (/SOUL\.md/i.test(promptText)) {
-    return "main-like";
-  }
-  if (/AGENTS\.md/i.test(promptText) && /TOOLS\.md/i.test(promptText)) {
-    return "subagent-like";
-  }
-  return "unknown";
+  return analyzeExecutionPrompt(promptText).executionClass;
 }
 
 function isInspectableStream(rule: FetchRewriteRule, response: Response): boolean {
@@ -253,6 +273,47 @@ function enrichSemanticFailure(summary: StreamInspectionResult): SemanticFailure
 
 function createSemanticStreamError(semanticError: SemanticFailureInfo): Error & SemanticFailureInfo {
   return Object.assign(new Error(semanticError.message), semanticError);
+}
+
+function createRetrySteeringError(
+  verdict: Exclude<RetrySteeringVerdict, "none">,
+): SemanticFailureInfo {
+  const message =
+    verdict === "empty-child-result"
+      ? "Child completion reported success without usable output; retry before upstream generation."
+      : "Suspicious child-completion payload detected before upstream generation.";
+
+  return {
+    status: 408,
+    code: "RETRY_STEERING_POISONED_CHILD_RESULT",
+    message,
+    providerStatus: 408,
+  };
+}
+
+function createRetrySteeringResponse(params: {
+  semanticError: SemanticFailureInfo;
+  executionClass: RequestExecutionClass;
+  retrySteeringVerdict: Exclude<RetrySteeringVerdict, "none">;
+  retrySteeringReason?: RetrySteeringReason;
+}): Response {
+  return new Response(
+    JSON.stringify({
+      error: {
+        code: params.semanticError.code,
+        message: params.semanticError.message,
+        retryable: true,
+        executionClass: params.executionClass,
+        retrySteeringVerdict: params.retrySteeringVerdict,
+        retrySteeringReason: params.retrySteeringReason,
+        syntheticFailure: true,
+      },
+    }),
+    {
+      status: params.semanticError.status ?? 408,
+      headers: { "content-type": "application/json" },
+    },
+  );
 }
 
 function wrapInspectableStream(params: {
@@ -384,14 +445,27 @@ async function forwardRequest(params: {
   request: Request;
   matched: FetchRewriteRule;
   requestLogger?: ForwardedRequestLogger;
+  logger?: PluginLogger;
   headers: Headers;
   bodyBuffer: Buffer;
   semanticFailureGating: boolean;
+  retrySteeringForPoisonedChildResults: boolean;
 }): Promise<Response> {
   const requestId = params.requestLogger ? randomUUID() : undefined;
-  const executionClass = params.semanticFailureGating
-    ? classifyExecutionClass(extractPromptishText(params.matched, params.headers, params.bodyBuffer))
-    : undefined;
+  const needsPromptAnalysis =
+    params.semanticFailureGating || params.retrySteeringForPoisonedChildResults || params.requestLogger !== undefined;
+  const promptText = needsPromptAnalysis
+    ? extractPromptishText(params.matched, params.headers, params.bodyBuffer)
+    : "";
+  const promptAnalysis = needsPromptAnalysis ? analyzeExecutionPrompt(promptText) : undefined;
+  const executionClass = promptAnalysis?.executionClass;
+  const retrySteeringDecision =
+    params.retrySteeringForPoisonedChildResults && promptText.length > 0
+      ? detectRetrySteeringNeed(promptText)
+      : { verdict: "none" as const };
+  const retrySteeringVerdict =
+    retrySteeringDecision.verdict === "none" ? undefined : retrySteeringDecision.verdict;
+  const retrySteeringReason = retrySteeringDecision.reason;
 
   if (requestId) {
     await params.requestLogger?.appendRequest({
@@ -402,7 +476,56 @@ async function forwardRequest(params: {
       method: params.request.method,
       headers: params.headers,
       bodyBuffer: params.bodyBuffer,
+      executionClass,
+      retrySteeringVerdict,
+      retrySteeringReason,
+      syntheticFailure: Boolean(retrySteeringVerdict),
     });
+  }
+
+  if (retrySteeringVerdict) {
+    const semanticError = createRetrySteeringError(retrySteeringVerdict);
+    const response = createRetrySteeringResponse({
+      semanticError,
+      executionClass: executionClass ?? "unknown",
+      retrySteeringVerdict,
+      retrySteeringReason,
+    });
+
+    params.logger?.info(
+      `openclaw-customprovider-cache short-circuited request before upstream generation provider=${params.matched.provider} executionClass=${executionClass ?? "unknown"} verdict=${retrySteeringVerdict}${retrySteeringReason ? ` reason=${retrySteeringReason}` : ""}`,
+    );
+
+    if (requestId) {
+      await params.requestLogger?.appendResponse({
+        requestId,
+        provider: params.matched.provider,
+        api: params.matched.api,
+        url: params.request.url,
+        response,
+        semanticState: "error",
+        semanticError,
+        executionClass,
+        retrySteeringVerdict,
+        retrySteeringReason,
+        syntheticFailure: true,
+      });
+      await params.requestLogger?.appendResponseSummary({
+        requestId,
+        provider: params.matched.provider,
+        api: params.matched.api,
+        url: params.request.url,
+        semanticState: "error",
+        semanticError,
+        executionClass,
+        transportStatus: semanticError.status,
+        retrySteeringVerdict,
+        retrySteeringReason,
+        syntheticFailure: true,
+      });
+    }
+
+    return response;
   }
 
   const response = await params.originalFetch(
@@ -419,6 +542,9 @@ async function forwardRequest(params: {
       url: params.request.url,
       response,
       executionClass: inspectableStream ? executionClass : undefined,
+      retrySteeringVerdict,
+      retrySteeringReason,
+    syntheticFailure: true,
     });
   }
 
@@ -437,12 +563,16 @@ async function forwardRequest(params: {
 }
 
 export function createPatchedFetch(
-  params: Pick<NormalizedPluginConfig, "openai" | "anthropic" | "semanticFailureGating"> & {
+  params: Pick<
+    NormalizedPluginConfig,
+    "openai" | "anthropic" | "semanticFailureGating" | "retrySteeringForPoisonedChildResults"
+  > & {
     originalFetch: typeof globalThis.fetch;
     rules: FetchRewriteRule[];
     stableUserId: string;
     fallbackSessionId: string;
     requestLogger?: ForwardedRequestLogger;
+    logger?: PluginLogger;
   },
 ): typeof globalThis.fetch {
   const normalizedRules = params.rules
@@ -471,9 +601,11 @@ export function createPatchedFetch(
         request,
         matched,
         requestLogger: params.requestLogger,
+        logger: params.logger,
         headers,
         bodyBuffer: rawBody,
         semanticFailureGating: params.semanticFailureGating,
+        retrySteeringForPoisonedChildResults: params.retrySteeringForPoisonedChildResults,
       });
     }
 
@@ -493,9 +625,11 @@ export function createPatchedFetch(
       request,
       matched,
       requestLogger: params.requestLogger,
+      logger: params.logger,
       headers: rewritten.headers,
       bodyBuffer: rewritten.bodyBuffer,
       semanticFailureGating: params.semanticFailureGating,
+      retrySteeringForPoisonedChildResults: params.retrySteeringForPoisonedChildResults,
     });
   };
 }
