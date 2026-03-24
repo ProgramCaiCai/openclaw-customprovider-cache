@@ -90,6 +90,17 @@ export function createStreamTracker(
         setCompleted,
         setError,
       );
+      return;
+    }
+
+    if (api === "google-generative-ai") {
+      processGooglePayload(
+        payload as Record<string, unknown>,
+        sawVisibleOutput,
+        markVisibleOutput,
+        setCompleted,
+        setError,
+      );
     }
   };
 
@@ -259,10 +270,64 @@ function processAnthropicPayload(
   }
 }
 
+function processGooglePayload(
+  payload: Record<string, unknown>,
+  sawVisibleOutput: boolean,
+  markVisibleOutput: () => void,
+  setCompleted: () => void,
+  setError: (semanticError: SemanticFailureInfo) => void,
+): void {
+  const error = asRecord(payload.error);
+  if (error) {
+    setError({
+      status: asNumber(error.code ?? payload.code ?? payload.status),
+      providerStatus: asNumber(error.code ?? payload.code ?? payload.status),
+      code: asString(error.status ?? payload.code),
+      message:
+        asString(error.message ?? payload.message) ?? "Google stream reported a terminal failure",
+    });
+    return;
+  }
+
+  const candidates = asArrayOfRecords(payload.candidates);
+  if (candidates.length === 0) {
+    return;
+  }
+
+  const hasVisibleOutput = candidates.some((candidate) => googleCandidateHasVisibleOutput(candidate));
+  if (hasVisibleOutput) {
+    markVisibleOutput();
+  }
+
+  const reachedTerminalSuccess = candidates.some(
+    (candidate) => hasNonEmptyText(candidate.finishReason) && (hasVisibleOutput || sawVisibleOutput),
+  );
+  if (reachedTerminalSuccess) {
+    setCompleted();
+  }
+}
+
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
+}
+
+function asArrayOfRecords(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.map((entry) => asRecord(entry)).filter(Boolean) as Record<string, unknown>[];
+}
+
+function googleCandidateHasVisibleOutput(candidate: Record<string, unknown>): boolean {
+  const content = asRecord(candidate.content);
+  const parts = content?.parts;
+  if (!Array.isArray(parts)) {
+    return false;
+  }
+
+  return parts.some((part) => hasNonEmptyText(asRecord(part)?.text));
 }
 
 function asString(value: unknown): string | undefined {

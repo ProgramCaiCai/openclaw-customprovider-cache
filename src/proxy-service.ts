@@ -11,6 +11,7 @@ import type {
 const SUPPORTED_APIS = new Set<ProviderApi>([
   "openai-responses",
   "anthropic-messages",
+  "google-generative-ai",
 ]);
 
 function resolveProviderApi(provider: string, config: ServiceParams["config"]): ProviderApi | undefined {

@@ -3,6 +3,7 @@ export type ProviderApi =
   | "openai-completions"
   | "openai-codex-responses"
   | "anthropic-messages"
+  | "google-generative-ai"
   | (string & {});
 
 export type ProviderModelConfig = {

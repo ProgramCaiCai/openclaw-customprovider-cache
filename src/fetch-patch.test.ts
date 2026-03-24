@@ -481,6 +481,73 @@ describe("createPatchedFetch", () => {
       }),
     );
   });
+
+  it("turns google stream terminal failures into real stream errors", async () => {
+    const logger = createMemoryLogger();
+    const fetchWithPatch = createPatchedFetch({
+      originalFetch: vi.fn(async () =>
+        new Response(
+          streamFromText(
+            'data: {"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"quota exhausted"}}\n\n',
+          ),
+          {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          },
+        ),
+      ),
+      rules: [
+        {
+          provider: "google",
+          api: "google-generative-ai",
+          baseUrl: "https://generativelanguage.example.test/v1beta",
+        },
+      ],
+      stableUserId: "openclaw-user",
+      fallbackSessionId: "session-stable",
+      requestLogger: logger,
+      semanticFailureGating: true,
+      openai: {
+        injectPromptCacheKey: true,
+        injectSessionIdHeader: true,
+      },
+      anthropic: {
+        injectMetadataUserId: true,
+        userId: undefined,
+        userIdPrefix: "openclaw",
+      },
+    });
+
+    const response = await fetchWithPatch(
+      "https://generativelanguage.example.test/v1beta/models/gemini-2.5-pro:streamGenerateContent",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: "AGENTS.md TOOLS.md" }] }],
+        }),
+      },
+    );
+
+    await expect(response.text()).rejects.toMatchObject({
+      status: 429,
+      code: "RATE_LIMIT",
+      message: "quota exhausted",
+      providerStatus: 429,
+    });
+    expect(logger.responseSummaries).toContainEqual(
+      expect.objectContaining({
+        api: "google-generative-ai",
+        semanticState: "error",
+        executionClass: "subagent-like",
+        semanticError: expect.objectContaining({
+          status: 429,
+          code: "RATE_LIMIT",
+          message: "quota exhausted",
+        }),
+      }),
+    );
+  });
 });
 
 function streamFromText(...chunks: string[]): ReadableStream<Uint8Array> {

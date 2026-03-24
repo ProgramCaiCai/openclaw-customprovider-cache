@@ -48,6 +48,11 @@ function buildApiEndpointCandidates(rule: FetchRewriteRule): string[] {
   return [...candidates];
 }
 
+function isGoogleStreamEndpointMatch(requestPathname: string, basePathname: string): boolean {
+  const modelsPrefix = joinPathname(basePathname, "models/");
+  return requestPathname.startsWith(modelsPrefix) && requestPathname.endsWith(":streamGenerateContent");
+}
+
 function isJsonContentType(contentType: string | null): boolean {
   return contentType?.toLowerCase().includes("application/json") ?? false;
 }
@@ -76,6 +81,9 @@ function isEndpointMatch(request: Request, rule: FetchRewriteRule): boolean {
   }
 
   const requestPathname = normalizePathname(requestUrl.pathname);
+  if (rule.api === "google-generative-ai") {
+    return isGoogleStreamEndpointMatch(requestPathname, normalizePathname(ruleUrl.pathname));
+  }
   return buildApiEndpointCandidates(rule).includes(requestPathname);
 }
 
@@ -111,6 +119,10 @@ function matchesApiShape(
 
   if (rule.api === "anthropic-messages") {
     return Array.isArray(body.messages);
+  }
+
+  if (rule.api === "google-generative-ai") {
+    return Array.isArray(body.contents);
   }
 
   return false;
@@ -184,7 +196,9 @@ export function classifyExecutionClass(promptText: string): RequestExecutionClas
 
 function isInspectableStream(rule: FetchRewriteRule, response: Response): boolean {
   return (
-    (rule.api === "openai-responses" || rule.api === "anthropic-messages") &&
+    (rule.api === "openai-responses" ||
+      rule.api === "anthropic-messages" ||
+      rule.api === "google-generative-ai") &&
     response.body !== null &&
     isStreamLikeContentType(response.headers.get("content-type"))
   );
