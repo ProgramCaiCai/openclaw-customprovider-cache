@@ -34,10 +34,18 @@ That matters because upstream systems such as cache layers, prompt stores, or co
 
 ## Install
 
-Primary one-command path:
+Default packaged install:
 
 ```bash
 python3 scripts/install.py
+```
+
+That command builds a local npm package with `npm pack`, writes the archive to `.artifacts/`, and installs the generated `.tgz` with `openclaw plugins install <artifact>`. This keeps the live OpenClaw install decoupled from later source edits in the repo.
+
+Explicit mutable source install for development only:
+
+```bash
+python3 scripts/install.py --link
 ```
 
 Dry run:
