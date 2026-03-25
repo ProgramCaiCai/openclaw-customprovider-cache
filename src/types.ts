@@ -113,6 +113,10 @@ export type ForwardedRequestLogRecord = {
   method: string;
   headers: Record<string, string>;
   body?: unknown;
+  requestNormalization?: {
+    droppedDuplicateProviderInputIds: string[];
+    droppedDuplicateProviderInputCount: number;
+  };
 };
 
 export type ForwardedResponseBodyState =
@@ -167,6 +171,7 @@ export type ForwardedRequestLogger = {
     method: string;
     headers: Headers;
     bodyBuffer: Buffer;
+    requestNormalization?: ForwardedRequestLogRecord["requestNormalization"];
   }) => Promise<void>;
   appendResponse: (record: {
     requestId: string;

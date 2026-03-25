@@ -73,6 +73,198 @@ describe("createPatchedFetch", () => {
     expect(payload.body.prompt_cache_key).toBe("session-stable");
   });
 
+  it("records duplicate rs_* normalization metadata for rewritten OpenAI responses requests", async () => {
+    const requestRecords: Array<Record<string, unknown>> = [];
+    const originalFetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const bodyText =
+        init?.body instanceof Uint8Array
+          ? Buffer.from(init.body).toString("utf8")
+          : typeof init?.body === "string"
+            ? init.body
+            : undefined;
+      return new Response(
+        JSON.stringify({
+          headers: init?.headers ? Object.fromEntries(new Headers(init.headers).entries()) : {},
+          body: bodyText ? JSON.parse(bodyText) : undefined,
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      );
+    });
+
+    const fetchWithPatch = createPatchedFetch({
+      originalFetch,
+      rules: [
+        {
+          provider: "openai",
+          api: "openai-responses",
+          baseUrl: "https://api.example.test/v1",
+        },
+      ],
+      stableUserId: "openclaw-user",
+      fallbackSessionId: "session-stable",
+      semanticFailureGating: true,
+      openai: {
+        injectPromptCacheKey: true,
+        injectSessionIdHeader: true,
+      },
+      anthropic: {
+        injectMetadataUserId: true,
+        userId: undefined,
+        userIdPrefix: "openclaw",
+      },
+      requestLogger: {
+        appendRequest: async (record) => {
+          requestRecords.push(record as unknown as Record<string, unknown>);
+        },
+        appendResponse: async () => undefined,
+        appendResponseSummary: async () => undefined,
+        flush: async () => undefined,
+      },
+    });
+
+    const response = await fetchWithPatch("https://api.example.test/v1/responses", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-5.2",
+        input: [
+          { id: "rs_dup", type: "reasoning", summary: [] },
+          { role: "user", content: "hello" },
+          { id: "rs_dup", type: "reasoning", summary: [] },
+        ],
+      }),
+    });
+
+    const payload = (await response.json()) as {
+      body: { input: unknown[] };
+    };
+
+    expect(payload.body.input).toEqual([
+      { id: "rs_dup", type: "reasoning", summary: [] },
+      { role: "user", content: "hello" },
+    ]);
+    expect(requestRecords).toContainEqual(
+      expect.objectContaining({
+        requestNormalization: {
+          droppedDuplicateProviderInputIds: ["rs_dup"],
+          droppedDuplicateProviderInputCount: 1,
+        },
+      }),
+    );
+  });
+
+  it("rotates away from a poisoned OpenAI session after repeated overloaded 503s", async () => {
+    const seenSessionIds: string[] = [];
+    const originalFetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      const bodyText =
+        init?.body instanceof Uint8Array
+          ? Buffer.from(init.body).toString("utf8")
+          : typeof init?.body === "string"
+            ? init.body
+            : undefined;
+      const payload = bodyText ? (JSON.parse(bodyText) as { prompt_cache_key?: string }) : {};
+      const sessionId = headers.get("session_id") ?? payload.prompt_cache_key ?? "missing";
+      seenSessionIds.push(sessionId);
+
+      if (seenSessionIds.length <= 2) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              code: "service_unavailable_error",
+              message: "upstream overloaded",
+            },
+          }),
+          {
+            status: 503,
+            headers: { "content-type": "application/json" },
+          },
+        );
+      }
+
+      return new Response(
+        JSON.stringify({
+          headers: Object.fromEntries(headers.entries()),
+          body: payload,
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      );
+    });
+
+    const fetchWithPatch = createPatchedFetch({
+      originalFetch,
+      rules: [
+        {
+          provider: "custom-openai",
+          api: "openai-responses",
+          baseUrl: "https://api.example.test/v1",
+        },
+      ],
+      stableUserId: "openclaw-user",
+      fallbackSessionId: "session-stable",
+      semanticFailureGating: true,
+      openai: {
+        injectPromptCacheKey: true,
+        injectSessionIdHeader: true,
+      },
+      anthropic: {
+        injectMetadataUserId: true,
+        userId: undefined,
+        userIdPrefix: "openclaw",
+      },
+    });
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const response = await fetchWithPatch("https://api.example.test/v1/responses", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          session_id: "session-poisoned",
+        },
+        body: JSON.stringify({
+          model: "gpt-5.4",
+          input: [{ role: "user", content: `attempt-${attempt}` }],
+        }),
+      });
+      expect(response.status).toBe(503);
+      await response.text();
+    }
+
+    const recoveryResponse = await fetchWithPatch("https://api.example.test/v1/responses", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        session_id: "session-poisoned",
+      },
+      body: JSON.stringify({
+        model: "gpt-5.4",
+        input: [{ role: "user", content: "recover" }],
+      }),
+    });
+
+    const payload = (await recoveryResponse.json()) as {
+      headers: Record<string, string>;
+      body: { prompt_cache_key?: string };
+    };
+
+    expect(seenSessionIds[0]).toBe("session-poisoned");
+    expect(seenSessionIds[1]).toBe("session-poisoned");
+    expect(seenSessionIds[2]).toMatch(/^session-stable-recover-/);
+    expect(seenSessionIds[2]).not.toBe("session-poisoned");
+    expect(payload.headers.session_id).toBe(seenSessionIds[2]);
+    expect(payload.headers["x-session-id"]).toBe(seenSessionIds[2]);
+    expect(payload.body.prompt_cache_key).toBe(seenSessionIds[2]);
+  });
+
   it("prefers the most specific provider baseUrl when provider baseUrls overlap", async () => {
     const originalFetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       const bodyText =

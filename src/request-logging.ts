@@ -235,6 +235,7 @@ function createRequestLogRecord(input: {
   method: string;
   headers: Headers;
   bodyBuffer: Buffer;
+  requestNormalization?: ForwardedRequestLogRecord["requestNormalization"];
 }): ForwardedRequestLogRecord {
   return {
     event: "request",
@@ -246,6 +247,7 @@ function createRequestLogRecord(input: {
     method: input.method,
     headers: sanitizeHeaders(input.headers),
     body: sanitizeBody(input.headers, input.bodyBuffer),
+    requestNormalization: input.requestNormalization,
   };
 }
 

@@ -194,6 +194,139 @@ export function classifyExecutionClass(promptText: string): RequestExecutionClas
   return "unknown";
 }
 
+const SESSION_OVERLOAD_THRESHOLD = 2;
+const SESSION_OVERLOAD_COOLDOWN_MS = 10 * 60 * 1000;
+
+type SessionRecoveryState = {
+  failureCount: number;
+  lastFailureAt: number;
+  poisonedUntil?: number;
+  recoverySessionId?: string;
+};
+
+type SessionRecoveryOutcome = "success" | "overloaded";
+
+type SessionRecoveryTracker = {
+  selectSessionId(sessionId: string): string;
+  noteOutcome(sessionId: string, outcome: SessionRecoveryOutcome | undefined): void;
+};
+
+function extractOpenAiSessionId(headers: Headers, rawBody: Buffer, fallbackSessionId: string): string {
+  const headerId = headers.get("session_id")?.trim() || headers.get("x-session-id")?.trim();
+  if (headerId) {
+    return headerId;
+  }
+
+  const body = asJsonObject(headers, rawBody);
+  const promptCacheKey = body?.prompt_cache_key;
+  if (typeof promptCacheKey === "string" && promptCacheKey.trim()) {
+    return promptCacheKey.trim();
+  }
+
+  return fallbackSessionId;
+}
+
+function createRecoverySessionId(fallbackSessionId: string): string {
+  return `${fallbackSessionId}-recover-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+}
+
+function createSessionRecoveryTracker(fallbackSessionId: string): SessionRecoveryTracker {
+  const states = new Map<string, SessionRecoveryState>();
+
+  const clearExpired = (sessionId: string, now: number): void => {
+    const entry = states.get(sessionId);
+    if (entry?.poisonedUntil && entry.poisonedUntil <= now) {
+      states.delete(sessionId);
+    }
+  };
+
+  const resolveSessionId = (sessionId: string, now: number, seen = new Set<string>()): string => {
+    clearExpired(sessionId, now);
+    if (seen.has(sessionId)) {
+      return sessionId;
+    }
+
+    const entry = states.get(sessionId);
+    if (!entry?.poisonedUntil || entry.poisonedUntil <= now || !entry.recoverySessionId) {
+      return sessionId;
+    }
+
+    seen.add(sessionId);
+    return resolveSessionId(entry.recoverySessionId, now, seen);
+  };
+
+  return {
+    selectSessionId(sessionId) {
+      return resolveSessionId(sessionId, Date.now());
+    },
+    noteOutcome(sessionId, outcome) {
+      if (!outcome) {
+        return;
+      }
+
+      if (outcome === "success") {
+        states.delete(sessionId);
+        return;
+      }
+
+      const now = Date.now();
+      const existing = states.get(sessionId);
+      const entry =
+        existing && now - existing.lastFailureAt <= SESSION_OVERLOAD_COOLDOWN_MS
+          ? existing
+          : { failureCount: 0, lastFailureAt: now };
+
+      entry.failureCount += 1;
+      entry.lastFailureAt = now;
+      if (entry.failureCount >= SESSION_OVERLOAD_THRESHOLD) {
+        entry.poisonedUntil = now + SESSION_OVERLOAD_COOLDOWN_MS;
+        entry.recoverySessionId ??= createRecoverySessionId(fallbackSessionId);
+      }
+
+      states.set(sessionId, entry);
+    },
+  };
+}
+
+function isOverloadText(value: string): boolean {
+  return /overload|capacity|service_unavailable|temporarily unavailable|upstream-overloaded/.test(
+    value.toLowerCase(),
+  );
+}
+
+function isSemanticOverload(semanticError: SemanticFailureInfo): boolean {
+  return (
+    semanticError.status === 503 ||
+    semanticError.providerStatus === 503 ||
+    semanticError.providerStatus === 529 ||
+    semanticError.code === "OVERLOADED" ||
+    isOverloadText(`${semanticError.code ?? ""} ${semanticError.message ?? ""}`)
+  );
+}
+
+async function classifyNonStreamOutcome(response: Response): Promise<SessionRecoveryOutcome | undefined> {
+  if (response.ok) {
+    return "success";
+  }
+
+  if (response.status === 503 || response.status === 529) {
+    return "overloaded";
+  }
+
+  const contentType = response.headers.get("content-type");
+  const isTextLike = isJsonContentType(contentType) || (contentType ?? "").toLowerCase().includes("text/");
+  if (!isTextLike) {
+    return undefined;
+  }
+
+  try {
+    const bodyText = await response.text();
+    return isOverloadText(bodyText) ? "overloaded" : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function isInspectableStream(rule: FetchRewriteRule, response: Response): boolean {
   return (
     (rule.api === "openai-responses" ||
@@ -276,6 +409,8 @@ function wrapInspectableStream(params: {
   requestUrl: string;
   response: Response;
   executionClass: RequestExecutionClass;
+  effectiveSessionId?: string;
+  sessionRecoveryTracker?: SessionRecoveryTracker;
 }): Response {
   const sourceBody = params.response.body;
   if (!sourceBody) {
@@ -314,6 +449,16 @@ function wrapInspectableStream(params: {
         semanticState: summary.semanticState,
         semanticError,
       });
+    }
+    if (params.sessionRecoveryTracker && params.effectiveSessionId) {
+      const outcome = semanticError
+        ? isSemanticOverload(semanticError)
+          ? "overloaded"
+          : undefined
+        : summary.semanticState === "completed"
+          ? "success"
+          : undefined;
+      params.sessionRecoveryTracker.noteOutcome(params.effectiveSessionId, outcome);
     }
     return semanticError;
   };
@@ -400,7 +545,13 @@ async function forwardRequest(params: {
   requestLogger?: ForwardedRequestLogger;
   headers: Headers;
   bodyBuffer: Buffer;
+  requestNormalization?: {
+    droppedDuplicateProviderInputIds: string[];
+    droppedDuplicateProviderInputCount: number;
+  };
   semanticFailureGating: boolean;
+  effectiveSessionId?: string;
+  sessionRecoveryTracker?: SessionRecoveryTracker;
 }): Promise<Response> {
   const requestId = params.requestLogger ? randomUUID() : undefined;
   const executionClass = params.semanticFailureGating
@@ -416,6 +567,7 @@ async function forwardRequest(params: {
       method: params.request.method,
       headers: params.headers,
       bodyBuffer: params.bodyBuffer,
+      requestNormalization: params.requestNormalization,
     });
   }
 
@@ -437,6 +589,10 @@ async function forwardRequest(params: {
   }
 
   if (!inspectableStream) {
+    if (params.sessionRecoveryTracker && params.effectiveSessionId) {
+      const outcome = await classifyNonStreamOutcome(response.clone());
+      params.sessionRecoveryTracker.noteOutcome(params.effectiveSessionId, outcome);
+    }
     return response;
   }
 
@@ -447,6 +603,8 @@ async function forwardRequest(params: {
     requestUrl: params.request.url,
     response,
     executionClass: executionClass ?? "unknown",
+    effectiveSessionId: params.effectiveSessionId,
+    sessionRecoveryTracker: params.sessionRecoveryTracker,
   });
 }
 
@@ -466,6 +624,7 @@ export function createPatchedFetch(
     }))
     .filter((rule) => rule.baseUrl.length > 0)
     .sort((left, right) => right.baseUrl.length - left.baseUrl.length);
+  const sessionRecoveryTracker = createSessionRecoveryTracker(params.fallbackSessionId);
 
   return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const request = new Request(input, init);
@@ -491,6 +650,14 @@ export function createPatchedFetch(
       });
     }
 
+    const requestedSessionId =
+      matched.api === "openai-responses"
+        ? extractOpenAiSessionId(new Headers(request.headers), rawBody, params.fallbackSessionId)
+        : undefined;
+    const overrideSessionId = requestedSessionId
+      ? sessionRecoveryTracker.selectSessionId(requestedSessionId)
+      : undefined;
+
     const rewritten = await rewriteProxyRequest({
       provider: matched.provider,
       api: matched.api,
@@ -498,7 +665,11 @@ export function createPatchedFetch(
       rawBody,
       stableUserId: params.stableUserId,
       fallbackSessionId: params.fallbackSessionId,
-      openai: params.openai,
+      openai: {
+        ...params.openai,
+        overrideSessionId:
+          overrideSessionId && overrideSessionId !== requestedSessionId ? overrideSessionId : undefined,
+      },
       anthropic: params.anthropic,
     });
 
@@ -509,7 +680,10 @@ export function createPatchedFetch(
       requestLogger: params.requestLogger,
       headers: rewritten.headers,
       bodyBuffer: rewritten.bodyBuffer,
+      requestNormalization: rewritten.requestNormalization,
       semanticFailureGating: params.semanticFailureGating,
+      effectiveSessionId: rewritten.openaiSessionId,
+      sessionRecoveryTracker,
     });
   };
 }

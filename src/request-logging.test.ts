@@ -44,6 +44,45 @@ describe("createForwardedRequestLogger", () => {
     expect(line.semanticState).toBeUndefined();
   });
 
+  it("writes request normalization metadata without needing raw duplicate content", async () => {
+    const stateDir = await createStateDir(tempDirs);
+    const logger = createForwardedRequestLogger({
+      config: { enabled: true },
+      stateDir,
+      logger: { info: () => {}, warn: () => {}, error: () => {} },
+    });
+
+    await logger?.appendRequest({
+      requestId: "req-normalized",
+      provider: "openai",
+      api: "openai-responses",
+      url: "https://example.test/v1/responses",
+      method: "POST",
+      headers: new Headers({ "content-type": "application/json" }),
+      bodyBuffer: Buffer.from(
+        JSON.stringify({
+          model: "gpt-5.2",
+          input: [{ role: "user", content: "hello" }],
+        }),
+      ),
+      requestNormalization: {
+        droppedDuplicateProviderInputIds: ["rs_dup"],
+        droppedDuplicateProviderInputCount: 1,
+      },
+    });
+    await logger?.flush();
+
+    const [line] = await readLines(stateDir);
+    expect(line).toMatchObject({
+      event: "request",
+      requestId: "req-normalized",
+      requestNormalization: {
+        droppedDuplicateProviderInputIds: ["rs_dup"],
+        droppedDuplicateProviderInputCount: 1,
+      },
+    });
+  });
+
   it("annotates stream-like transport responses as unresolved instead of implying success", async () => {
     const stateDir = await createStateDir(tempDirs);
     const logger = createForwardedRequestLogger({
