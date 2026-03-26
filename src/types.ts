@@ -33,9 +33,34 @@ export type RequestLoggingConfig = {
   path?: string;
 };
 
+export type SubagentResultStopgapVerdict =
+  | "none"
+  | "poisoned-child-result"
+  | "empty-child-result";
+
+export type SubagentResultStopgapReason =
+  | "raw-child-result-dump"
+  | "child-completion-without-deliverable-summary"
+  | "child-completion-empty-output";
+
+export type SubagentResultStopgapBoundedBlock = {
+  kind: "internal-task-completion";
+  text: string;
+  result: string;
+};
+
+export type SemanticFailureClassification =
+  | "context-window-exceeded"
+  | "quota-exceeded"
+  | "usage-not-included"
+  | "invalid-request"
+  | "server-overloaded"
+  | "retryable-stream";
+
 export type NormalizedPluginConfig = {
   providers: string[];
   semanticFailureGating: boolean;
+  subagentResultStopgap: boolean;
   requestLogging: RequestLoggingConfig;
   openai: {
     injectSessionIdHeader: boolean;
@@ -95,6 +120,10 @@ export type SemanticFailureInfo = {
   code?: string;
   message: string;
   providerStatus?: number;
+  classification?: SemanticFailureClassification;
+  retryable?: boolean;
+  retryAfterMs?: number;
+  syntheticFailure?: boolean;
 };
 
 export type StreamInspectionResult = {

@@ -51,6 +51,11 @@ export function normalizePluginConfig(raw: unknown): NormalizedPluginConfig {
       "semanticFailureGating",
       true,
     ),
+    subagentResultStopgap: readBoolean(
+      value.subagentResultStopgap,
+      "subagentResultStopgap",
+      true,
+    ),
     requestLogging: {
       enabled: readBoolean(requestLoggingRaw.enabled, "requestLogging.enabled", false),
       path: readOptionalString(requestLoggingRaw.path, "requestLogging.path"),

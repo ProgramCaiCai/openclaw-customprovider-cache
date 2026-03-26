@@ -7,6 +7,7 @@ describe("normalizePluginConfig", () => {
     expect(normalizePluginConfig(undefined)).toEqual({
       providers: [],
       semanticFailureGating: true,
+      subagentResultStopgap: true,
       requestLogging: {
         enabled: false,
         path: undefined,
@@ -50,6 +51,16 @@ describe("normalizePluginConfig", () => {
       }),
     ).toMatchObject({
       semanticFailureGating: false,
+    });
+  });
+
+  it("allows disabling subagent result stopgap explicitly", () => {
+    expect(
+      normalizePluginConfig({
+        subagentResultStopgap: false,
+      }),
+    ).toMatchObject({
+      subagentResultStopgap: false,
     });
   });
 });

@@ -44,6 +44,7 @@ describe("SessionMetadataProxyService", () => {
       pluginConfig: {
         providers: [],
         semanticFailureGating: true,
+        subagentResultStopgap: true,
         requestLogging: {
           enabled: false,
           path: undefined,
@@ -90,6 +91,7 @@ describe("SessionMetadataProxyService", () => {
       pluginConfig: {
         providers: [],
         semanticFailureGating: true,
+        subagentResultStopgap: true,
         requestLogging: {
           enabled: false,
           path: undefined,
@@ -149,6 +151,7 @@ describe("SessionMetadataProxyService", () => {
       pluginConfig: {
         providers: [],
         semanticFailureGating: true,
+        subagentResultStopgap: true,
         requestLogging: {
           enabled: false,
           path: undefined,
@@ -209,6 +212,7 @@ describe("SessionMetadataProxyService", () => {
       pluginConfig: {
         providers: [],
         semanticFailureGating: true,
+        subagentResultStopgap: true,
         requestLogging: {
           enabled: true,
           path: undefined,
@@ -326,6 +330,7 @@ describe("SessionMetadataProxyService", () => {
       pluginConfig: {
         providers: [],
         semanticFailureGating: true,
+        subagentResultStopgap: true,
         requestLogging: {
           enabled: true,
           path: undefined,
@@ -443,6 +448,7 @@ describe("SessionMetadataProxyService", () => {
       pluginConfig: {
         providers: [],
         semanticFailureGating: true,
+        subagentResultStopgap: true,
         requestLogging: {
           enabled: true,
           path: undefined,
@@ -545,6 +551,7 @@ describe("SessionMetadataProxyService", () => {
       pluginConfig: {
         providers: [],
         semanticFailureGating: true,
+        subagentResultStopgap: true,
         requestLogging: {
           enabled: true,
           path: undefined,
@@ -580,7 +587,7 @@ describe("SessionMetadataProxyService", () => {
 
     await expect(response.text()).rejects.toMatchObject({
       status: 503,
-      code: "OVERLOADED",
+      code: "SERVER_OVERLOADED",
       message: "capacity exhausted",
       providerStatus: 529,
     });
@@ -636,6 +643,7 @@ describe("SessionMetadataProxyService", () => {
       pluginConfig: {
         providers: [],
         semanticFailureGating: false,
+        subagentResultStopgap: true,
         requestLogging: {
           enabled: true,
           path: undefined,
@@ -708,6 +716,7 @@ describe("SessionMetadataProxyService", () => {
       pluginConfig: {
         providers: [],
         semanticFailureGating: true,
+        subagentResultStopgap: true,
         requestLogging: {
           enabled: false,
           path: undefined,

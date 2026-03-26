@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 
+import { classifySemanticFailure } from "./semantic-failure.js";
 import { createStreamTracker } from "./stream-inspector.js";
+import { detectSubagentResultStopgap } from "./subagent-result-stopgap.js";
 import type {
   FetchRewriteRule,
   ForwardedRequestLogger,
@@ -8,6 +10,8 @@ import type {
   RequestExecutionClass,
   SemanticFailureInfo,
   StreamInspectionResult,
+  SubagentResultStopgapReason,
+  SubagentResultStopgapVerdict,
 } from "./types.js";
 import { rewriteProxyRequest } from "./proxy-rewrite.js";
 
@@ -299,7 +303,8 @@ function isSemanticOverload(semanticError: SemanticFailureInfo): boolean {
     semanticError.status === 503 ||
     semanticError.providerStatus === 503 ||
     semanticError.providerStatus === 529 ||
-    semanticError.code === "OVERLOADED" ||
+    semanticError.code === "SERVER_OVERLOADED" ||
+    semanticError.classification === "server-overloaded" ||
     isOverloadText(`${semanticError.code ?? ""} ${semanticError.message ?? ""}`)
   );
 }
@@ -353,53 +358,56 @@ function shouldEscalateSemanticFailure(
 }
 
 function enrichSemanticFailure(summary: StreamInspectionResult): SemanticFailureInfo {
-  const baseMessage =
-    summary.semanticError?.message ??
-    (summary.semanticState === "ended-empty"
-      ? "stream ended without a terminal success event"
-      : summary.semanticState === "aborted"
-        ? "stream aborted before a terminal success event"
-        : "upstream stream reported a terminal failure");
-  const providerStatus = summary.semanticError?.providerStatus ?? summary.semanticError?.status;
-  const fingerprint = `${summary.semanticError?.code ?? ""} ${baseMessage}`.toLowerCase();
-
-  if (summary.semanticState === "ended-empty" || summary.semanticState === "aborted") {
-    return {
-      status: 408,
-      code: "STREAM_ABORTED",
-      message: baseMessage,
-      providerStatus,
-    };
-  }
-
-  if (/overload|capacity/.test(fingerprint)) {
-    return {
-      status: 503,
-      code: "OVERLOADED",
-      message: baseMessage,
-      providerStatus,
-    };
-  }
-
-  if (/rate[_ -]?limit|too many requests|quota/.test(fingerprint)) {
-    return {
-      status: 429,
-      code: "RATE_LIMIT",
-      message: baseMessage,
-      providerStatus,
-    };
-  }
-
-  return {
-    status: 502,
-    code: "UPSTREAM_STREAM_ERROR",
-    message: baseMessage,
-    providerStatus,
-  };
+  return classifySemanticFailure(summary);
 }
 
 function createSemanticStreamError(semanticError: SemanticFailureInfo): Error & SemanticFailureInfo {
   return Object.assign(new Error(semanticError.message), semanticError);
+}
+
+function createSubagentResultStopgapError(params: {
+  verdict: Exclude<SubagentResultStopgapVerdict, "none">;
+  reason?: SubagentResultStopgapReason;
+}): SemanticFailureInfo {
+  const message =
+    params.verdict === "empty-child-result"
+      ? "Child completion reported success without usable output; retry before upstream generation."
+      : "Suspicious child-completion payload detected before upstream generation.";
+
+  return {
+    status: 408,
+    providerStatus: 408,
+    code: "SUBAGENT_RESULT_STOPGAP",
+    message,
+    classification: "retryable-stream",
+    retryable: true,
+    syntheticFailure: true,
+  };
+}
+
+function createSubagentResultStopgapResponse(params: {
+  semanticError: SemanticFailureInfo;
+  executionClass: RequestExecutionClass;
+  verdict: Exclude<SubagentResultStopgapVerdict, "none">;
+  reason?: SubagentResultStopgapReason;
+}): Response {
+  return new Response(
+    JSON.stringify({
+      error: {
+        code: params.semanticError.code,
+        message: params.semanticError.message,
+        retryable: true,
+        executionClass: params.executionClass,
+        verdict: params.verdict,
+        reason: params.reason,
+        syntheticFailure: true,
+      },
+    }),
+    {
+      status: params.semanticError.status ?? 408,
+      headers: { "content-type": "application/json" },
+    },
+  );
 }
 
 function wrapInspectableStream(params: {
@@ -550,13 +558,16 @@ async function forwardRequest(params: {
     droppedDuplicateProviderInputCount: number;
   };
   semanticFailureGating: boolean;
+  subagentResultStopgap: boolean;
   effectiveSessionId?: string;
   sessionRecoveryTracker?: SessionRecoveryTracker;
 }): Promise<Response> {
   const requestId = params.requestLogger ? randomUUID() : undefined;
-  const executionClass = params.semanticFailureGating
-    ? classifyExecutionClass(extractPromptishText(params.matched, params.headers, params.bodyBuffer))
-    : undefined;
+  const promptText =
+    params.semanticFailureGating || params.subagentResultStopgap
+      ? extractPromptishText(params.matched, params.headers, params.bodyBuffer)
+      : "";
+  const executionClass = params.semanticFailureGating ? classifyExecutionClass(promptText) : undefined;
 
   if (requestId) {
     await params.requestLogger?.appendRequest({
@@ -569,6 +580,37 @@ async function forwardRequest(params: {
       bodyBuffer: params.bodyBuffer,
       requestNormalization: params.requestNormalization,
     });
+  }
+
+  if (params.subagentResultStopgap) {
+    const decision = detectSubagentResultStopgap(promptText);
+    if (decision.verdict !== "none") {
+      const semanticError = createSubagentResultStopgapError({
+        verdict: decision.verdict,
+        reason: decision.reason,
+      });
+      const response = createSubagentResultStopgapResponse({
+        semanticError,
+        executionClass: executionClass ?? "unknown",
+        verdict: decision.verdict,
+        reason: decision.reason,
+      });
+
+      if (requestId) {
+        await params.requestLogger?.appendResponse({
+          requestId,
+          provider: params.matched.provider,
+          api: params.matched.api,
+          url: params.request.url,
+          response: response.clone(),
+          semanticState: "error",
+          semanticError,
+          executionClass,
+        });
+      }
+
+      return response;
+    }
   }
 
   const response = await params.originalFetch(
@@ -609,7 +651,10 @@ async function forwardRequest(params: {
 }
 
 export function createPatchedFetch(
-  params: Pick<NormalizedPluginConfig, "openai" | "anthropic" | "semanticFailureGating"> & {
+  params: Pick<
+    NormalizedPluginConfig,
+    "openai" | "anthropic" | "semanticFailureGating" | "subagentResultStopgap"
+  > & {
     originalFetch: typeof globalThis.fetch;
     rules: FetchRewriteRule[];
     stableUserId: string;
@@ -647,6 +692,7 @@ export function createPatchedFetch(
         headers,
         bodyBuffer: rawBody,
         semanticFailureGating: params.semanticFailureGating,
+        subagentResultStopgap: params.subagentResultStopgap,
       });
     }
 
@@ -682,6 +728,7 @@ export function createPatchedFetch(
       bodyBuffer: rewritten.bodyBuffer,
       requestNormalization: rewritten.requestNormalization,
       semanticFailureGating: params.semanticFailureGating,
+      subagentResultStopgap: params.subagentResultStopgap,
       effectiveSessionId: rewritten.openaiSessionId,
       sessionRecoveryTracker,
     });
