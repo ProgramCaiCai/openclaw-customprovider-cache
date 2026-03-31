@@ -51,6 +51,11 @@ export function normalizePluginConfig(raw: unknown): NormalizedPluginConfig {
       "semanticFailureGating",
       true,
     ),
+    mainLikePostFirstTokenFailureEscalation: readBoolean(
+      value.mainLikePostFirstTokenFailureEscalation,
+      "mainLikePostFirstTokenFailureEscalation",
+      true,
+    ),
     subagentResultStopgap: readBoolean(
       value.subagentResultStopgap,
       "subagentResultStopgap",

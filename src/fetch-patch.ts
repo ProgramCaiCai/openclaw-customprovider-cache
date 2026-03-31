@@ -345,13 +345,20 @@ function isInspectableStream(rule: FetchRewriteRule, response: Response): boolea
 function shouldEscalateSemanticFailure(
   summary: StreamInspectionResult,
   executionClass: RequestExecutionClass,
+  mainLikePostFirstTokenFailureEscalation: boolean,
 ): boolean {
   if (summary.semanticState === "completed") {
     return false;
   }
 
   if (summary.semanticState === "error-after-partial") {
-    return executionClass === "subagent-like";
+    if (executionClass === "subagent-like") {
+      return true;
+    }
+    if (executionClass === "main-like") {
+      return mainLikePostFirstTokenFailureEscalation;
+    }
+    return false;
   }
 
   return true;
@@ -417,6 +424,7 @@ function wrapInspectableStream(params: {
   requestUrl: string;
   response: Response;
   executionClass: RequestExecutionClass;
+  mainLikePostFirstTokenFailureEscalation: boolean;
   effectiveSessionId?: string;
   sessionRecoveryTracker?: SessionRecoveryTracker;
 }): Response {
@@ -484,7 +492,13 @@ function wrapInspectableStream(params: {
             const summary = tracker.finalize();
             const semanticError = appendSummary(summary);
             finalized = true;
-            if (shouldEscalateSemanticFailure(summary, params.executionClass)) {
+            if (
+              shouldEscalateSemanticFailure(
+                summary,
+                params.executionClass,
+                params.mainLikePostFirstTokenFailureEscalation,
+              )
+            ) {
               controller.error(createSemanticStreamError(semanticError ?? enrichSemanticFailure(summary)));
               return;
             }
@@ -502,7 +516,14 @@ function wrapInspectableStream(params: {
           tracker.consumeChunk(value);
           const currentSummary = tracker.currentResult();
 
-          if (currentSummary && shouldEscalateSemanticFailure(currentSummary, params.executionClass)) {
+          if (
+            currentSummary &&
+            shouldEscalateSemanticFailure(
+              currentSummary,
+              params.executionClass,
+              params.mainLikePostFirstTokenFailureEscalation,
+            )
+          ) {
             const semanticError = appendSummary(currentSummary) ?? enrichSemanticFailure(currentSummary);
             finalized = true;
             controller.error(createSemanticStreamError(semanticError));
@@ -558,6 +579,7 @@ async function forwardRequest(params: {
     droppedDuplicateProviderInputCount: number;
   };
   semanticFailureGating: boolean;
+  mainLikePostFirstTokenFailureEscalation?: boolean;
   subagentResultStopgap: boolean;
   effectiveSessionId?: string;
   sessionRecoveryTracker?: SessionRecoveryTracker;
@@ -645,6 +667,8 @@ async function forwardRequest(params: {
     requestUrl: params.request.url,
     response,
     executionClass: executionClass ?? "unknown",
+    mainLikePostFirstTokenFailureEscalation:
+      params.mainLikePostFirstTokenFailureEscalation ?? true,
     effectiveSessionId: params.effectiveSessionId,
     sessionRecoveryTracker: params.sessionRecoveryTracker,
   });
@@ -653,7 +677,11 @@ async function forwardRequest(params: {
 export function createPatchedFetch(
   params: Pick<
     NormalizedPluginConfig,
-    "openai" | "anthropic" | "semanticFailureGating" | "subagentResultStopgap"
+    | "openai"
+    | "anthropic"
+    | "semanticFailureGating"
+    | "mainLikePostFirstTokenFailureEscalation"
+    | "subagentResultStopgap"
   > & {
     originalFetch: typeof globalThis.fetch;
     rules: FetchRewriteRule[];
@@ -692,6 +720,8 @@ export function createPatchedFetch(
         headers,
         bodyBuffer: rawBody,
         semanticFailureGating: params.semanticFailureGating,
+        mainLikePostFirstTokenFailureEscalation:
+          params.mainLikePostFirstTokenFailureEscalation,
         subagentResultStopgap: params.subagentResultStopgap,
       });
     }
@@ -728,6 +758,8 @@ export function createPatchedFetch(
       bodyBuffer: rewritten.bodyBuffer,
       requestNormalization: rewritten.requestNormalization,
       semanticFailureGating: params.semanticFailureGating,
+      mainLikePostFirstTokenFailureEscalation:
+        params.mainLikePostFirstTokenFailureEscalation,
       subagentResultStopgap: params.subagentResultStopgap,
       effectiveSessionId: rewritten.openaiSessionId,
       sessionRecoveryTracker,

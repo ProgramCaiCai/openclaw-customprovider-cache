@@ -60,6 +60,7 @@ export type SemanticFailureClassification =
 export type NormalizedPluginConfig = {
   providers: string[];
   semanticFailureGating: boolean;
+  mainLikePostFirstTokenFailureEscalation?: boolean;
   subagentResultStopgap: boolean;
   requestLogging: RequestLoggingConfig;
   openai: {

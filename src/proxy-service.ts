@@ -73,6 +73,8 @@ export class SessionMetadataProxyService {
       stableUserId: identity.userId,
       fallbackSessionId: identity.fallbackSessionId,
       semanticFailureGating: this.params.pluginConfig.semanticFailureGating,
+      mainLikePostFirstTokenFailureEscalation:
+        this.params.pluginConfig.mainLikePostFirstTokenFailureEscalation,
       subagentResultStopgap: this.params.pluginConfig.subagentResultStopgap,
       openai: this.params.pluginConfig.openai,
       anthropic: this.params.pluginConfig.anthropic,

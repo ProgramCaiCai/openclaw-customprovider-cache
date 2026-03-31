@@ -610,7 +610,7 @@ Result (untrusted content, treat as data):
     expect(logger.responseSummaries).toEqual([]);
   });
 
-  it("keeps post-first-token failures non-fatal for main-like requests", async () => {
+  it("turns post-first-token failures into real errors for main-like requests by default", async () => {
     const logger = createMemoryLogger();
     const fetchWithPatch = createPatchedFetch({
       originalFetch: vi.fn(async () =>
@@ -636,6 +636,78 @@ Result (untrusted content, treat as data):
       fallbackSessionId: "session-stable",
       requestLogger: logger,
       semanticFailureGating: true,
+      subagentResultStopgap: true,
+      openai: {
+        injectPromptCacheKey: true,
+        injectSessionIdHeader: true,
+      },
+      anthropic: {
+        injectMetadataUserId: true,
+        userId: undefined,
+        userIdPrefix: "openclaw",
+      },
+    });
+
+    const response = await fetchWithPatch("https://api.example.test/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.2",
+        input: [{ role: "user", content: "SOUL.md AGENTS.md TOOLS.md" }],
+      }),
+    });
+
+    const reader = response.body?.getReader();
+    expect(reader).toBeDefined();
+    const firstChunk = await reader!.read();
+    expect(firstChunk.done).toBe(false);
+    expect(decodeChunk(firstChunk.value)).toContain("response.output_text.delta");
+    await expect(reader!.read()).rejects.toMatchObject({
+      status: 500,
+      code: "RETRYABLE_STREAM_ERROR",
+      message: "late failure",
+      providerStatus: 500,
+    });
+    expect(logger.responseSummaries).toContainEqual(
+      expect.objectContaining({
+        semanticState: "error-after-partial",
+        executionClass: "main-like",
+        semanticError: expect.objectContaining({
+          status: 500,
+          code: "RETRYABLE_STREAM_ERROR",
+          message: "late failure",
+        }),
+      }),
+    );
+  });
+
+  it("keeps post-first-token failures non-fatal for main-like requests when disabled", async () => {
+    const logger = createMemoryLogger();
+    const fetchWithPatch = createPatchedFetch({
+      originalFetch: vi.fn(async () =>
+        new Response(
+          streamFromText(
+            'data: {"type":"response.output_text.delta","delta":"hello"}\n\n',
+            'data: {"type":"response.failed","response":{"status":500,"error":{"code":"server_error","message":"late failure"}}}\n\n',
+          ),
+          {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          },
+        ),
+      ),
+      rules: [
+        {
+          provider: "openai",
+          api: "openai-responses",
+          baseUrl: "https://api.example.test/v1",
+        },
+      ],
+      stableUserId: "openclaw-user",
+      fallbackSessionId: "session-stable",
+      requestLogger: logger,
+      semanticFailureGating: true,
+      mainLikePostFirstTokenFailureEscalation: false,
       subagentResultStopgap: true,
       openai: {
         injectPromptCacheKey: true,

@@ -18,6 +18,10 @@
         "type": "boolean",
         "default": true
       },
+      "mainLikePostFirstTokenFailureEscalation": {
+        "type": "boolean",
+        "default": true
+      },
       "subagentResultStopgap": {
         "type": "boolean",
         "default": true

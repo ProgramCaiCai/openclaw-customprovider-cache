@@ -7,6 +7,7 @@ describe("normalizePluginConfig", () => {
     expect(normalizePluginConfig(undefined)).toEqual({
       providers: [],
       semanticFailureGating: true,
+      mainLikePostFirstTokenFailureEscalation: true,
       subagentResultStopgap: true,
       requestLogging: {
         enabled: false,
@@ -51,6 +52,16 @@ describe("normalizePluginConfig", () => {
       }),
     ).toMatchObject({
       semanticFailureGating: false,
+    });
+  });
+
+  it("allows disabling main-like post-first-token escalation explicitly", () => {
+    expect(
+      normalizePluginConfig({
+        mainLikePostFirstTokenFailureEscalation: false,
+      }),
+    ).toMatchObject({
+      mainLikePostFirstTokenFailureEscalation: false,
     });
   });
 

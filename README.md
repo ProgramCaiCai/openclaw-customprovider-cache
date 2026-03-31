@@ -21,7 +21,7 @@ That matters because upstream systems such as cache layers, prompt stores, or co
 - Completes missing OpenAI Responses cache/session identifiers
 - Injects missing Anthropic `metadata.user_id`
 - Converts semantic fake-success streams into real failures before the first visible token for covered providers
-- Escalates post-first-token semantic failures only for subagent-like requests detected by the `SOUL.md`-absence heuristic
+- Escalates post-first-token semantic failures for both main-like and subagent-like requests by default, with a dedicated opt-out for main-like traffic
 - Short-circuits bounded poisoned child-result envelopes before upstream generation with a retry-friendly synthetic failure
 - Leaves auth handling to OpenClaw and forwards existing auth headers unchanged
 - Keeps request rewriting scoped to configured custom-provider traffic
@@ -78,6 +78,7 @@ The plugin works with defaults. Configure it under `plugins.entries.openclaw-cus
 {
   "providers": ["custom-openai", "custom-anthropic"],
   "semanticFailureGating": true,
+  "mainLikePostFirstTokenFailureEscalation": true,
   "subagentResultStopgap": true,
   "requestLogging": {
     "enabled": false
@@ -97,6 +98,7 @@ Notes:
 
 - `providers`: empty means all configured providers with supported APIs
 - `semanticFailureGating`: defaults to `true`; set `false` to disable semantic stream inspection and let covered streams pass through untouched
+- `mainLikePostFirstTokenFailureEscalation`: defaults to `true`; set `false` to keep main-like post-first-token semantic failures readable in-stream instead of raising a real stream error
 - `subagentResultStopgap`: defaults to `true`; set `false` to disable the bounded request-side child-result short-circuit
 - `requestLogging.enabled`: when `true`, append sanitized JSONL request and response events for each forwarded plugin-handled request to `stateDir/forwarded-requests.jsonl`
 - `requestLogging.path`: optional custom log file path; relative paths resolve from the plugin `stateDir`
@@ -152,9 +154,10 @@ The execution class is a v1 heuristic based on prompt/bootstrap payloads:
 That heuristic matters because the policy is intentionally split:
 
 - Pre-first-token semantic failures are upgraded to real stream errors for all covered streams
-- Post-first-token semantic failures are only upgraded to real stream errors for `subagent-like` requests
+- Post-first-token semantic failures are upgraded to real stream errors for `subagent-like` requests and, by default, for `main-like` requests too
+- Set `mainLikePostFirstTokenFailureEscalation=false` if you explicitly want to preserve main-like partial output despite the semantic failure
 - Stream terminal failures are normalized into Codex-like categories (`CONTEXT_WINDOW_EXCEEDED`, `QUOTA_EXCEEDED`, `USAGE_NOT_INCLUDED`, `INVALID_REQUEST`, `SERVER_OVERLOADED`, or `RETRYABLE_STREAM_ERROR`)
-- Main-like partial failures stay readable to the caller and are only logged as semantic failures
+- With the default config, main-like partial failures also raise real stream errors after the first visible token; disable `mainLikePostFirstTokenFailureEscalation` to keep the old readable-but-non-fatal behavior
 
 ## Current scope
 
