@@ -147,6 +147,8 @@ export type ForwardedRequestLogRecord = {
   requestNormalization?: {
     droppedDuplicateProviderInputIds: string[];
     droppedDuplicateProviderInputCount: number;
+    droppedOrphanFunctionCallOutputCount?: number;
+    droppedOrphanFunctionCallOutputCallIds?: string[];
     scrubbedAssistantReplayCount?: number;
     scrubbedAssistantReplayRules?: string[];
   };

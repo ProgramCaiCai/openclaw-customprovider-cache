@@ -50,6 +50,32 @@ function isAssistantMessageItem(
   return item.type === undefined || item.type === "message";
 }
 
+function isFunctionCallItem(
+  value: unknown,
+): value is Record<string, unknown> & { type: "function_call"; call_id: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+
+  const item = value as { type?: unknown; call_id?: unknown };
+  return item.type === "function_call" && typeof item.call_id === "string" && item.call_id.trim().length > 0;
+}
+
+function isFunctionCallOutputItem(
+  value: unknown,
+): value is Record<string, unknown> & { type: "function_call_output"; call_id: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+
+  const item = value as { type?: unknown; call_id?: unknown };
+  return (
+    item.type === "function_call_output" &&
+    typeof item.call_id === "string" &&
+    item.call_id.trim().length > 0
+  );
+}
+
 function collectTextParts(value: unknown, parts: string[]): void {
   if (typeof value === "string") {
     parts.push(value);
@@ -106,6 +132,8 @@ function mergeRequestNormalization(
   let hasData = false;
   const droppedDuplicateProviderInputIds = new Set<string>();
   let droppedDuplicateProviderInputCount = 0;
+  let droppedOrphanFunctionCallOutputCount = 0;
+  const droppedOrphanFunctionCallOutputCallIds: string[] = [];
   let scrubbedAssistantReplayCount = 0;
   const scrubbedAssistantReplayRules: string[] = [];
 
@@ -128,6 +156,14 @@ function mergeRequestNormalization(
         scrubbedAssistantReplayRules.push(rule);
       }
     }
+    if (part.droppedOrphanFunctionCallOutputCount) {
+      droppedOrphanFunctionCallOutputCount += part.droppedOrphanFunctionCallOutputCount;
+    }
+    for (const callId of part.droppedOrphanFunctionCallOutputCallIds ?? []) {
+      if (!droppedOrphanFunctionCallOutputCallIds.includes(callId)) {
+        droppedOrphanFunctionCallOutputCallIds.push(callId);
+      }
+    }
   }
 
   if (!hasData) {
@@ -137,6 +173,12 @@ function mergeRequestNormalization(
   return {
     droppedDuplicateProviderInputIds: [...droppedDuplicateProviderInputIds],
     droppedDuplicateProviderInputCount,
+    droppedOrphanFunctionCallOutputCount:
+      droppedOrphanFunctionCallOutputCount > 0 ? droppedOrphanFunctionCallOutputCount : undefined,
+    droppedOrphanFunctionCallOutputCallIds:
+      droppedOrphanFunctionCallOutputCallIds.length > 0
+        ? droppedOrphanFunctionCallOutputCallIds
+        : undefined,
     scrubbedAssistantReplayCount:
       scrubbedAssistantReplayCount > 0 ? scrubbedAssistantReplayCount : undefined,
     scrubbedAssistantReplayRules:
@@ -268,6 +310,56 @@ function scrubOpenAiAssistantReplay(
   };
 }
 
+function dropOrphanFunctionCallOutputs(
+  body: Record<string, unknown> | undefined,
+): {
+  jsonBody: Record<string, unknown> | undefined;
+  changed: boolean;
+  requestNormalization?: RewriteResult["requestNormalization"];
+} {
+  const input = body?.input;
+  if (!Array.isArray(input)) {
+    return { jsonBody: body, changed: false };
+  }
+
+  const seenFunctionCallIds = new Set<string>();
+  let droppedOrphanFunctionCallOutputCount = 0;
+  const droppedOrphanFunctionCallOutputCallIds: string[] = [];
+  const normalizedInput = input.filter((item) => {
+    if (isFunctionCallItem(item)) {
+      seenFunctionCallIds.add(item.call_id);
+      return true;
+    }
+
+    if (!isFunctionCallOutputItem(item)) {
+      return true;
+    }
+
+    if (seenFunctionCallIds.has(item.call_id)) {
+      return true;
+    }
+
+    droppedOrphanFunctionCallOutputCount += 1;
+    droppedOrphanFunctionCallOutputCallIds.push(item.call_id);
+    return false;
+  });
+
+  if (droppedOrphanFunctionCallOutputCount === 0) {
+    return { jsonBody: body, changed: false };
+  }
+
+  return {
+    jsonBody: { ...body, input: normalizedInput },
+    changed: true,
+    requestNormalization: {
+      droppedDuplicateProviderInputIds: [],
+      droppedDuplicateProviderInputCount: 0,
+      droppedOrphanFunctionCallOutputCount,
+      droppedOrphanFunctionCallOutputCallIds: [...new Set(droppedOrphanFunctionCallOutputCallIds)],
+    },
+  };
+}
+
 function isJsonContentType(contentType: string | null): boolean {
   return contentType?.toLowerCase().includes("application/json") ?? false;
 }
@@ -333,6 +425,14 @@ export async function rewriteProxyRequest(params: RewriteParams): Promise<Rewrit
       scrubbedReplay.requestNormalization,
     );
     bodyChanged = bodyChanged || scrubbedReplay.changed;
+
+    const orphanedOutputs = dropOrphanFunctionCallOutputs(jsonBody);
+    jsonBody = orphanedOutputs.jsonBody;
+    requestNormalization = mergeRequestNormalization(
+      requestNormalization,
+      orphanedOutputs.requestNormalization,
+    );
+    bodyChanged = bodyChanged || orphanedOutputs.changed;
 
     const requestedSessionId = pickSessionId(headers, jsonBody, params.fallbackSessionId);
     const sessionId = params.openai.overrideSessionId ?? requestedSessionId;

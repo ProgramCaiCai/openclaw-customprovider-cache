@@ -277,6 +277,118 @@ describe("rewriteProxyRequest", () => {
     });
   });
 
+  it("drops orphaned function_call_output items that have no matching function_call", async () => {
+    const body = {
+      model: "gpt-5.4",
+      input: [
+        {
+          type: "function_call",
+          call_id: "call_write_ok",
+          name: "write",
+          arguments: '{"path":"a.txt","content":"ok"}',
+        },
+        {
+          type: "function_call_output",
+          call_id: "call_write_ok",
+          output: "ok",
+        },
+        {
+          type: "function_call_output",
+          call_id: "call_write_orphan",
+          output: "should be dropped",
+        },
+        { type: "message", role: "assistant", phase: "final_answer", content: "Done." },
+      ],
+    };
+
+    const rewritten = await rewriteProxyRequest({
+      provider: "openai",
+      api: "openai-responses",
+      headers: new Headers({ "content-type": "application/json" }),
+      rawBody: Buffer.from(JSON.stringify(body)),
+      stableUserId: "openclaw-user",
+      fallbackSessionId: "session-stable",
+      openai: {
+        injectPromptCacheKey: true,
+        injectSessionIdHeader: true,
+        scrubAssistantCommentaryReplay: true,
+      },
+      anthropic: {
+        injectMetadataUserId: true,
+        userId: undefined,
+        userIdPrefix: "openclaw",
+      },
+    });
+
+    expect(rewritten.jsonBody).toMatchObject({
+      input: [
+        {
+          type: "function_call",
+          call_id: "call_write_ok",
+          name: "write",
+          arguments: '{"path":"a.txt","content":"ok"}',
+        },
+        {
+          type: "function_call_output",
+          call_id: "call_write_ok",
+          output: "ok",
+        },
+        { type: "message", role: "assistant", phase: "final_answer", content: "Done." },
+      ],
+    });
+    expect(rewritten.requestNormalization).toEqual({
+      droppedDuplicateProviderInputIds: [],
+      droppedDuplicateProviderInputCount: 0,
+      droppedOrphanFunctionCallOutputCount: 1,
+      droppedOrphanFunctionCallOutputCallIds: ["call_write_orphan"],
+    });
+  });
+
+  it("preserves function_call_output items when a matching function_call exists earlier in input", async () => {
+    const body = {
+      model: "gpt-5.4",
+      input: [
+        { type: "message", role: "user", content: "hello" },
+        {
+          type: "function_call",
+          call_id: "call_lookup_weather",
+          name: "lookup_weather",
+          arguments: '{"city":"Tokyo"}',
+        },
+        {
+          type: "function_call_output",
+          call_id: "call_lookup_weather",
+          output: '{"temperatureC":21}',
+        },
+        { type: "message", role: "assistant", phase: "final_answer", content: "Done." },
+      ],
+    };
+
+    const rewritten = await rewriteProxyRequest({
+      provider: "openai",
+      api: "openai-responses",
+      headers: new Headers({ "content-type": "application/json" }),
+      rawBody: Buffer.from(JSON.stringify(body)),
+      stableUserId: "openclaw-user",
+      fallbackSessionId: "session-stable",
+      openai: {
+        injectPromptCacheKey: true,
+        injectSessionIdHeader: true,
+        scrubAssistantCommentaryReplay: true,
+      },
+      anthropic: {
+        injectMetadataUserId: true,
+        userId: undefined,
+        userIdPrefix: "openclaw",
+      },
+    });
+
+    expect(rewritten.jsonBody).toMatchObject({
+      input: body.input,
+    });
+    expect(rewritten.requestNormalization).toBeUndefined();
+  });
+
   it("does not scrub user messages that mention pseudo-tool artifact text", async () => {
     const body = {
       model: "gpt-5.4",
