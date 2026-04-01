@@ -1,4 +1,8 @@
-import type { ProviderApi } from "./types.js";
+import type {
+  ForwardedRequestLogRecord,
+  NormalizedPluginConfig,
+  ProviderApi,
+} from "./types.js";
 
 type RewriteParams = {
   provider: string;
@@ -7,16 +11,10 @@ type RewriteParams = {
   rawBody: Buffer;
   stableUserId: string;
   fallbackSessionId: string;
-  openai: {
-    injectSessionIdHeader: boolean;
-    injectPromptCacheKey: boolean;
+  openai: NormalizedPluginConfig["openai"] & {
     overrideSessionId?: string;
   };
-  anthropic: {
-    injectMetadataUserId: boolean;
-    userId?: string;
-    userIdPrefix: string;
-  };
+  anthropic: NormalizedPluginConfig["anthropic"];
 };
 
 export type RewriteResult = {
@@ -24,11 +22,10 @@ export type RewriteResult = {
   bodyBuffer: Buffer;
   jsonBody?: Record<string, unknown>;
   openaiSessionId?: string;
-  requestNormalization?: {
-    droppedDuplicateProviderInputIds: string[];
-    droppedDuplicateProviderInputCount: number;
-  };
+  requestNormalization?: ForwardedRequestLogRecord["requestNormalization"];
 };
+
+type RequestNormalization = NonNullable<RewriteResult["requestNormalization"]>;
 
 function isRsProviderInputItem(value: unknown): value is Record<string, unknown> & { id: string } {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -36,6 +33,115 @@ function isRsProviderInputItem(value: unknown): value is Record<string, unknown>
   }
 
   return typeof (value as { id?: unknown }).id === "string" && /^rs_/.test((value as { id: string }).id);
+}
+
+function isAssistantMessageItem(
+  value: unknown,
+): value is Record<string, unknown> & { role: "assistant"; type?: "message"; phase?: unknown } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+
+  const item = value as { role?: unknown; type?: unknown };
+  if (item.role !== "assistant") {
+    return false;
+  }
+
+  return item.type === undefined || item.type === "message";
+}
+
+function collectTextParts(value: unknown, parts: string[]): void {
+  if (typeof value === "string") {
+    parts.push(value);
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectTextParts(entry, parts);
+    }
+    return;
+  }
+
+  if (!value || typeof value !== "object") {
+    return;
+  }
+
+  for (const entry of Object.values(value)) {
+    collectTextParts(entry, parts);
+  }
+}
+
+function extractAssistantMessageText(item: Record<string, unknown>): string {
+  const parts: string[] = [];
+  collectTextParts(item.content, parts);
+  return parts.join("\n").trim();
+}
+
+function isPseudoToolArtifactText(text: string): boolean {
+  const normalized = text.trimStart();
+  return (
+    /^to=[a-z0-9_.:-]+(?:\s+[^\n]*)?\/json\b/im.test(normalized) ||
+    /^<(tool|function)\b/i.test(normalized)
+  );
+}
+
+function isJsonArtifactText(text: string): boolean {
+  const normalized = text.trim();
+  if (!(normalized.startsWith("{") || normalized.startsWith("["))) {
+    return false;
+  }
+
+  try {
+    const parsed = JSON.parse(normalized) as unknown;
+    return typeof parsed === "object" && parsed !== null;
+  } catch {
+    return false;
+  }
+}
+
+function mergeRequestNormalization(
+  ...parts: Array<RequestNormalization | undefined>
+): RequestNormalization | undefined {
+  let hasData = false;
+  const droppedDuplicateProviderInputIds = new Set<string>();
+  let droppedDuplicateProviderInputCount = 0;
+  let scrubbedAssistantReplayCount = 0;
+  const scrubbedAssistantReplayRules: string[] = [];
+
+  for (const part of parts) {
+    if (!part) {
+      continue;
+    }
+
+    hasData = true;
+    for (const id of part.droppedDuplicateProviderInputIds) {
+      droppedDuplicateProviderInputIds.add(id);
+    }
+    droppedDuplicateProviderInputCount += part.droppedDuplicateProviderInputCount;
+
+    if (part.scrubbedAssistantReplayCount) {
+      scrubbedAssistantReplayCount += part.scrubbedAssistantReplayCount;
+    }
+    for (const rule of part.scrubbedAssistantReplayRules ?? []) {
+      if (!scrubbedAssistantReplayRules.includes(rule)) {
+        scrubbedAssistantReplayRules.push(rule);
+      }
+    }
+  }
+
+  if (!hasData) {
+    return undefined;
+  }
+
+  return {
+    droppedDuplicateProviderInputIds: [...droppedDuplicateProviderInputIds],
+    droppedDuplicateProviderInputCount,
+    scrubbedAssistantReplayCount:
+      scrubbedAssistantReplayCount > 0 ? scrubbedAssistantReplayCount : undefined,
+    scrubbedAssistantReplayRules:
+      scrubbedAssistantReplayRules.length > 0 ? scrubbedAssistantReplayRules : undefined,
+  };
 }
 
 function dedupeOpenAiProviderInput(
@@ -78,6 +184,86 @@ function dedupeOpenAiProviderInput(
     requestNormalization: {
       droppedDuplicateProviderInputIds: [...new Set(droppedDuplicateProviderInputIds)],
       droppedDuplicateProviderInputCount,
+    },
+  };
+}
+
+function scrubOpenAiAssistantReplay(
+  body: Record<string, unknown> | undefined,
+  enabled: boolean,
+): {
+  jsonBody: Record<string, unknown> | undefined;
+  changed: boolean;
+  requestNormalization?: RewriteResult["requestNormalization"];
+} {
+  if (!enabled) {
+    return { jsonBody: body, changed: false };
+  }
+
+  const input = body?.input;
+  if (!Array.isArray(input)) {
+    return { jsonBody: body, changed: false };
+  }
+
+  let scrubbedAssistantReplayCount = 0;
+  const scrubbedAssistantReplayRules: string[] = [];
+  let expectAdjacentJsonArtifact = false;
+  const normalizedInput = input.filter((item) => {
+    if (!isAssistantMessageItem(item)) {
+      expectAdjacentJsonArtifact = false;
+      return true;
+    }
+
+    if (item.phase === "final_answer") {
+      expectAdjacentJsonArtifact = false;
+      return true;
+    }
+
+    const text = extractAssistantMessageText(item);
+
+    if (item.phase === "commentary") {
+      scrubbedAssistantReplayCount += 1;
+      if (!scrubbedAssistantReplayRules.includes("phase-commentary")) {
+        scrubbedAssistantReplayRules.push("phase-commentary");
+      }
+      expectAdjacentJsonArtifact = isPseudoToolArtifactText(text);
+      return false;
+    }
+
+    if (isPseudoToolArtifactText(text)) {
+      scrubbedAssistantReplayCount += 1;
+      if (!scrubbedAssistantReplayRules.includes("pseudo-tool-artifact")) {
+        scrubbedAssistantReplayRules.push("pseudo-tool-artifact");
+      }
+      expectAdjacentJsonArtifact = true;
+      return false;
+    }
+
+    if (expectAdjacentJsonArtifact && isJsonArtifactText(text)) {
+      scrubbedAssistantReplayCount += 1;
+      if (!scrubbedAssistantReplayRules.includes("pseudo-tool-artifact")) {
+        scrubbedAssistantReplayRules.push("pseudo-tool-artifact");
+      }
+      expectAdjacentJsonArtifact = false;
+      return false;
+    }
+
+    expectAdjacentJsonArtifact = false;
+    return true;
+  });
+
+  if (scrubbedAssistantReplayCount === 0) {
+    return { jsonBody: body, changed: false };
+  }
+
+  return {
+    jsonBody: { ...body, input: normalizedInput },
+    changed: true,
+    requestNormalization: {
+      droppedDuplicateProviderInputIds: [],
+      droppedDuplicateProviderInputCount: 0,
+      scrubbedAssistantReplayCount,
+      scrubbedAssistantReplayRules,
     },
   };
 }
@@ -136,6 +322,17 @@ export async function rewriteProxyRequest(params: RewriteParams): Promise<Rewrit
     jsonBody = normalizedInput.jsonBody;
     requestNormalization = normalizedInput.requestNormalization;
     bodyChanged = normalizedInput.changed;
+
+    const scrubbedReplay = scrubOpenAiAssistantReplay(
+      jsonBody,
+      params.openai.scrubAssistantCommentaryReplay,
+    );
+    jsonBody = scrubbedReplay.jsonBody;
+    requestNormalization = mergeRequestNormalization(
+      requestNormalization,
+      scrubbedReplay.requestNormalization,
+    );
+    bodyChanged = bodyChanged || scrubbedReplay.changed;
 
     const requestedSessionId = pickSessionId(headers, jsonBody, params.fallbackSessionId);
     const sessionId = params.openai.overrideSessionId ?? requestedSessionId;

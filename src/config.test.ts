@@ -16,6 +16,7 @@ describe("normalizePluginConfig", () => {
       openai: {
         injectPromptCacheKey: true,
         injectSessionIdHeader: true,
+        scrubAssistantCommentaryReplay: true,
       },
       anthropic: {
         injectMetadataUserId: true,
@@ -53,6 +54,30 @@ describe("normalizePluginConfig", () => {
     ).toMatchObject({
       semanticFailureGating: false,
     });
+  });
+
+  it("allows disabling assistant commentary replay scrubbing explicitly", () => {
+    expect(
+      normalizePluginConfig({
+        openai: {
+          scrubAssistantCommentaryReplay: false,
+        },
+      }),
+    ).toMatchObject({
+      openai: {
+        scrubAssistantCommentaryReplay: false,
+      },
+    });
+  });
+
+  it("rejects non-boolean assistant commentary replay scrub config", () => {
+    expect(() =>
+      normalizePluginConfig({
+        openai: {
+          scrubAssistantCommentaryReplay: "yes",
+        },
+      }),
+    ).toThrow("openai.scrubAssistantCommentaryReplay");
   });
 
   it("allows disabling main-like post-first-token escalation explicitly", () => {

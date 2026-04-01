@@ -52,6 +52,7 @@ describe("SessionMetadataProxyService", () => {
         openai: {
           injectPromptCacheKey: true,
           injectSessionIdHeader: true,
+          scrubAssistantCommentaryReplay: true,
         },
         anthropic: {
           injectMetadataUserId: true,
@@ -99,6 +100,7 @@ describe("SessionMetadataProxyService", () => {
         openai: {
           injectPromptCacheKey: true,
           injectSessionIdHeader: true,
+          scrubAssistantCommentaryReplay: true,
         },
         anthropic: {
           injectMetadataUserId: true,
@@ -159,6 +161,7 @@ describe("SessionMetadataProxyService", () => {
         openai: {
           injectPromptCacheKey: true,
           injectSessionIdHeader: true,
+          scrubAssistantCommentaryReplay: true,
         },
         anthropic: {
           injectMetadataUserId: true,
@@ -220,6 +223,7 @@ describe("SessionMetadataProxyService", () => {
         openai: {
           injectPromptCacheKey: true,
           injectSessionIdHeader: true,
+          scrubAssistantCommentaryReplay: true,
         },
         anthropic: {
           injectMetadataUserId: true,
@@ -338,6 +342,7 @@ describe("SessionMetadataProxyService", () => {
         openai: {
           injectPromptCacheKey: true,
           injectSessionIdHeader: true,
+          scrubAssistantCommentaryReplay: true,
         },
         anthropic: {
           injectMetadataUserId: true,
@@ -456,6 +461,7 @@ describe("SessionMetadataProxyService", () => {
         openai: {
           injectPromptCacheKey: true,
           injectSessionIdHeader: true,
+          scrubAssistantCommentaryReplay: true,
         },
         anthropic: {
           injectMetadataUserId: true,
@@ -559,6 +565,7 @@ describe("SessionMetadataProxyService", () => {
         openai: {
           injectPromptCacheKey: true,
           injectSessionIdHeader: true,
+          scrubAssistantCommentaryReplay: true,
         },
         anthropic: {
           injectMetadataUserId: true,
@@ -651,6 +658,7 @@ describe("SessionMetadataProxyService", () => {
         openai: {
           injectPromptCacheKey: true,
           injectSessionIdHeader: true,
+          scrubAssistantCommentaryReplay: true,
         },
         anthropic: {
           injectMetadataUserId: true,
@@ -724,6 +732,7 @@ describe("SessionMetadataProxyService", () => {
         openai: {
           injectPromptCacheKey: true,
           injectSessionIdHeader: true,
+          scrubAssistantCommentaryReplay: true,
         },
         anthropic: {
           injectMetadataUserId: true,

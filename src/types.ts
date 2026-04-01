@@ -66,6 +66,7 @@ export type NormalizedPluginConfig = {
   openai: {
     injectSessionIdHeader: boolean;
     injectPromptCacheKey: boolean;
+    scrubAssistantCommentaryReplay: boolean;
   };
   anthropic: {
     injectMetadataUserId: boolean;
@@ -146,6 +147,8 @@ export type ForwardedRequestLogRecord = {
   requestNormalization?: {
     droppedDuplicateProviderInputIds: string[];
     droppedDuplicateProviderInputCount: number;
+    scrubbedAssistantReplayCount?: number;
+    scrubbedAssistantReplayRules?: string[];
   };
 };
 

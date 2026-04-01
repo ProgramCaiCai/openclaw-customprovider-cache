@@ -76,6 +76,11 @@ export function normalizePluginConfig(raw: unknown): NormalizedPluginConfig {
         "openai.injectPromptCacheKey",
         true,
       ),
+      scrubAssistantCommentaryReplay: readBoolean(
+        openaiRaw.scrubAssistantCommentaryReplay,
+        "openai.scrubAssistantCommentaryReplay",
+        true,
+      ),
     },
     anthropic: {
       injectMetadataUserId: readBoolean(

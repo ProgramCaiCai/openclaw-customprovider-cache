@@ -85,7 +85,8 @@ The plugin works with defaults. Configure it under `plugins.entries.openclaw-cus
   },
   "openai": {
     "injectSessionIdHeader": true,
-    "injectPromptCacheKey": true
+    "injectPromptCacheKey": true,
+    "scrubAssistantCommentaryReplay": true
   },
   "anthropic": {
     "injectMetadataUserId": true,
@@ -102,8 +103,11 @@ Notes:
 - `subagentResultStopgap`: defaults to `true`; set `false` to disable the bounded request-side child-result short-circuit
 - `requestLogging.enabled`: when `true`, append sanitized JSONL request and response events for each forwarded plugin-handled request to `stateDir/forwarded-requests.jsonl`
 - `requestLogging.path`: optional custom log file path; relative paths resolve from the plugin `stateDir`
+- `requestNormalization.scrubbedAssistantReplayCount`: reserved forwarded-request metadata field for how many assistant replay items were scrubbed from an outbound request body
+- `requestNormalization.scrubbedAssistantReplayRules`: reserved forwarded-request metadata field listing which scrubber rules fired for that outbound request body
 - `openai.injectSessionIdHeader`: defaults to `true`; set `false` to stop injecting missing `session_id` and `x-session-id`
 - `openai.injectPromptCacheKey`: defaults to `true`; set `false` to stop injecting a missing `prompt_cache_key`
+- `openai.scrubAssistantCommentaryReplay`: defaults to `true`; reserved config switch for the upcoming OpenAI Responses request-body normalization path. It is intended to control future assistant replay scrubbing for covered custom providers and does not modify already stored transcripts
 - `anthropic.injectMetadataUserId`: defaults to `true`; set `false` to stop injecting a missing `metadata.user_id`
 - `anthropic.userId`: optional explicit `metadata.user_id`
 - `anthropic.userIdPrefix`: used when generating a stable installation-scoped identity

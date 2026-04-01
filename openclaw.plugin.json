@@ -51,6 +51,10 @@
           "injectPromptCacheKey": {
             "type": "boolean",
             "default": true
+          },
+          "scrubAssistantCommentaryReplay": {
+            "type": "boolean",
+            "default": true
           }
         }
       },

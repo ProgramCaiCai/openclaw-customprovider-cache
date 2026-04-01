@@ -6,6 +6,7 @@ import { detectSubagentResultStopgap } from "./subagent-result-stopgap.js";
 import type {
   FetchRewriteRule,
   ForwardedRequestLogger,
+  ForwardedRequestLogRecord,
   NormalizedPluginConfig,
   RequestExecutionClass,
   SemanticFailureInfo,
@@ -574,10 +575,7 @@ async function forwardRequest(params: {
   requestLogger?: ForwardedRequestLogger;
   headers: Headers;
   bodyBuffer: Buffer;
-  requestNormalization?: {
-    droppedDuplicateProviderInputIds: string[];
-    droppedDuplicateProviderInputCount: number;
-  };
+  requestNormalization?: ForwardedRequestLogRecord["requestNormalization"];
   semanticFailureGating: boolean;
   mainLikePostFirstTokenFailureEscalation?: boolean;
   subagentResultStopgap: boolean;
