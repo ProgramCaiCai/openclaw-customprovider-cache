@@ -11,6 +11,7 @@ import {
 import { createStreamTracker } from "./stream-inspector.js";
 import { detectSubagentResultStopgap } from "./subagent-result-stopgap.js";
 import type {
+  CorrelationEnvelope,
   FetchRewriteRule,
   ForwardedRequestLogger,
   ForwardedRequestLogRecord,
@@ -275,6 +276,42 @@ function enrichSemanticFailure(summary: StreamInspectionResult): SemanticFailure
   return classifySemanticFailure(summary);
 }
 
+function buildCorrelationEnvelope(params: {
+  pluginInstallationId?: string;
+  stableUserId: string;
+  matched: FetchRewriteRule;
+  headers: Headers;
+  bodyBuffer: Buffer;
+  requestNormalization?: ForwardedRequestLogRecord["requestNormalization"];
+  requestedSessionId?: string;
+  effectiveSessionId?: string;
+  executionClass?: RequestExecutionClass;
+}): CorrelationEnvelope {
+  const body = asJsonObject(params.headers, params.bodyBuffer);
+  const model = typeof body?.model === "string" ? body.model : undefined;
+  return {
+    pluginInstallationId: params.pluginInstallationId ?? params.stableUserId,
+    stableUserId: params.stableUserId,
+    provider: params.matched.provider,
+    api: params.matched.api,
+    ...(model ? { model } : {}),
+    ...(params.requestedSessionId ? { requestedSessionId: params.requestedSessionId } : {}),
+    ...(params.effectiveSessionId ? { effectiveSessionId: params.effectiveSessionId } : {}),
+    ...(params.requestedSessionId &&
+    params.effectiveSessionId &&
+    params.requestedSessionId !== params.effectiveSessionId
+      ? { recoverySessionId: params.effectiveSessionId }
+      : {}),
+    ...(params.executionClass ? { executionClass: params.executionClass } : {}),
+    ...(params.requestNormalization?.normalizationKey
+      ? { normalizationKey: params.requestNormalization.normalizationKey }
+      : {}),
+    ...(params.requestNormalization?.normalizationReplaySource
+      ? { normalizationReplaySource: params.requestNormalization.normalizationReplaySource }
+      : {}),
+  };
+}
+
 function createSemanticStreamError(semanticError: SemanticFailureInfo): Error & SemanticFailureInfo {
   return Object.assign(new Error(semanticError.message), semanticError);
 }
@@ -330,6 +367,7 @@ function wrapInspectableStream(params: {
   requestLogger?: ForwardedRequestLogger;
   requestUrl: string;
   response: Response;
+  correlation: CorrelationEnvelope;
   executionClass: RequestExecutionClass;
   requestedSessionId?: string;
   mainLikePostFirstTokenFailureEscalation: boolean;
@@ -373,6 +411,7 @@ function wrapInspectableStream(params: {
         semanticState: summary.semanticState,
         semanticError,
         streamIntegrity: summary.streamIntegrity,
+        correlation: params.correlation,
       });
     }
     if (
@@ -498,6 +537,8 @@ async function forwardRequest(params: {
   semanticFailureGating: boolean;
   mainLikePostFirstTokenFailureEscalation?: boolean;
   subagentResultStopgap: boolean;
+  pluginInstallationId?: string;
+  stableUserId: string;
   requestedSessionId?: string;
   effectiveSessionId?: string;
   sessionRecoveryTracker?: SessionRecoveryTracker;
@@ -508,6 +549,17 @@ async function forwardRequest(params: {
       ? extractPromptishText(params.matched, params.headers, params.bodyBuffer)
       : "";
   const executionClass = params.semanticFailureGating ? classifyExecutionClass(promptText) : undefined;
+  const correlation = buildCorrelationEnvelope({
+    pluginInstallationId: params.pluginInstallationId,
+    stableUserId: params.stableUserId,
+    matched: params.matched,
+    headers: params.headers,
+    bodyBuffer: params.bodyBuffer,
+    requestNormalization: params.requestNormalization,
+    requestedSessionId: params.requestedSessionId,
+    effectiveSessionId: params.effectiveSessionId,
+    executionClass,
+  });
 
   if (requestId) {
     await params.requestLogger?.appendRequest({
@@ -519,6 +571,7 @@ async function forwardRequest(params: {
       headers: params.headers,
       bodyBuffer: params.bodyBuffer,
       requestNormalization: params.requestNormalization,
+      correlation,
     });
   }
 
@@ -546,6 +599,7 @@ async function forwardRequest(params: {
           semanticState: "error",
           semanticError,
           executionClass,
+          correlation,
         });
       }
 
@@ -568,6 +622,7 @@ async function forwardRequest(params: {
       url: params.request.url,
       response: responseForLogging ?? response,
       executionClass: inspectableStream ? executionClass : undefined,
+      correlation,
     });
   }
 
@@ -598,6 +653,7 @@ async function forwardRequest(params: {
     requestLogger: params.requestLogger,
     requestUrl: params.request.url,
     response,
+    correlation,
     executionClass: executionClass ?? "unknown",
     requestedSessionId: params.requestedSessionId,
     mainLikePostFirstTokenFailureEscalation:
@@ -617,6 +673,7 @@ export function createPatchedFetch(
     | "subagentResultStopgap"
   > & {
     originalFetch: typeof globalThis.fetch;
+    pluginInstallationId?: string;
     rules: FetchRewriteRule[];
     stableUserId: string;
     fallbackSessionId: string;
@@ -659,6 +716,8 @@ export function createPatchedFetch(
         mainLikePostFirstTokenFailureEscalation:
           params.mainLikePostFirstTokenFailureEscalation,
         subagentResultStopgap: params.subagentResultStopgap,
+        pluginInstallationId: params.pluginInstallationId,
+        stableUserId: params.stableUserId,
       });
     }
 
@@ -698,6 +757,8 @@ export function createPatchedFetch(
       mainLikePostFirstTokenFailureEscalation:
         params.mainLikePostFirstTokenFailureEscalation,
       subagentResultStopgap: params.subagentResultStopgap,
+      pluginInstallationId: params.pluginInstallationId,
+      stableUserId: params.stableUserId,
       requestedSessionId,
       effectiveSessionId: rewritten.openaiSessionId,
       sessionRecoveryTracker,

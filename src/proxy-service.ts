@@ -90,6 +90,7 @@ export class SessionMetadataProxyService {
       requestLogger: this.requestLogger,
       normalizationLedger: this.normalizationLedger,
       sessionRecoveryTracker: this.sessionRecoveryTracker,
+      pluginInstallationId: identity.installationId,
       rules,
       stableUserId: identity.userId,
       fallbackSessionId: identity.fallbackSessionId,

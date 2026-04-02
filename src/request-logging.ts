@@ -145,6 +145,7 @@ function createRequestLogRecord(input: {
   headers: Headers;
   bodyBuffer: Buffer;
   requestNormalization?: ForwardedRequestLogRecord["requestNormalization"];
+  correlation?: ForwardedRequestLogRecord["correlation"];
 }): ForwardedRequestLogRecord {
   return {
     event: "request",
@@ -157,6 +158,9 @@ function createRequestLogRecord(input: {
     headers: sanitizeHeaders(input.headers),
     body: sanitizeBody(input.headers, input.bodyBuffer),
     requestNormalization: input.requestNormalization,
+    correlation: input.correlation
+      ? sanitizeValue(input.correlation) as ForwardedRequestLogRecord["correlation"]
+      : undefined,
   };
 }
 
@@ -173,6 +177,7 @@ function createResponseLogRecord(input: {
   semanticState?: SemanticState;
   semanticError?: SemanticFailureInfo;
   executionClass?: RequestExecutionClass;
+  correlation?: ForwardedResponseLogRecord["correlation"];
 }): ForwardedResponseLogRecord {
   const semanticState =
     input.semanticState ?? (input.bodyState === "stream-like" ? "unknown-stream" : undefined);
@@ -202,6 +207,9 @@ function createResponseLogRecord(input: {
     providerTerminalKind: resolveProviderTerminalKind({ status: input.status, semanticState }),
     normalizedErrorKind: errorPolicy.normalizedErrorKind,
     errorPolicyKind: errorPolicy.kind,
+    correlation: input.correlation
+      ? sanitizeValue(input.correlation) as ForwardedResponseLogRecord["correlation"]
+      : undefined,
   };
 }
 
@@ -215,6 +223,7 @@ function createResponseSummaryLogRecord(input: {
   executionClass?: RequestExecutionClass;
   transportStatus?: number;
   streamIntegrity?: ForwardedResponseSummaryLogRecord["streamIntegrity"];
+  correlation?: ForwardedResponseSummaryLogRecord["correlation"];
 }): ForwardedResponseSummaryLogRecord {
   const errorPolicy = resolveErrorPolicy({
     transportStatus: input.transportStatus,
@@ -239,6 +248,9 @@ function createResponseSummaryLogRecord(input: {
     errorPolicyKind: errorPolicy.kind,
     streamIntegrity: input.streamIntegrity
       ? sanitizeValue(input.streamIntegrity) as ForwardedResponseSummaryLogRecord["streamIntegrity"]
+      : undefined,
+    correlation: input.correlation
+      ? sanitizeValue(input.correlation) as ForwardedResponseSummaryLogRecord["correlation"]
       : undefined,
   };
 }
@@ -420,6 +432,7 @@ export function createForwardedRequestLogger(params: {
           semanticState: record.semanticState,
           semanticError: record.semanticError,
           executionClass: record.executionClass,
+          correlation: record.correlation,
         });
         return `${JSON.stringify(line)}\n`;
       });

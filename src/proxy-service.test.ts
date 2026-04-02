@@ -267,6 +267,13 @@ describe("SessionMetadataProxyService", () => {
       headers: Record<string, string>;
       body: Record<string, unknown>;
       timestamp: string;
+      correlation?: {
+        pluginInstallationId?: string;
+        stableUserId?: string;
+        requestedSessionId?: string;
+        effectiveSessionId?: string;
+        normalizationReplaySource?: string;
+      };
     };
 
     const responseRecord = JSON.parse(lines[1] ?? "null") as {
@@ -284,6 +291,12 @@ describe("SessionMetadataProxyService", () => {
       bodyState: string;
       truncated: boolean;
       timestamp: string;
+      correlation?: {
+        pluginInstallationId?: string;
+        stableUserId?: string;
+        requestedSessionId?: string;
+        effectiveSessionId?: string;
+      };
     };
 
     expect(requestRecord.event).toBe("request");
@@ -299,6 +312,13 @@ describe("SessionMetadataProxyService", () => {
       model: "gpt-5.2",
       prompt_cache_key: requestRecord.headers.session_id,
     });
+    expect(requestRecord.correlation).toMatchObject({
+      pluginInstallationId: expect.any(String),
+      stableUserId: expect.stringMatching(/^openclaw-/),
+      requestedSessionId: requestRecord.headers.session_id,
+      effectiveSessionId: requestRecord.headers.session_id,
+      normalizationReplaySource: "fresh",
+    });
 
     expect(responseRecord.event).toBe("response");
     expect(responseRecord.requestId).toBe(requestRecord.requestId);
@@ -313,6 +333,12 @@ describe("SessionMetadataProxyService", () => {
     expect(responseRecord.body).toMatchObject({
       method: "POST",
       url: `${cfg.models.providers.openai.baseUrl}/responses`,
+    });
+    expect(responseRecord.correlation).toMatchObject({
+      pluginInstallationId: requestRecord.correlation?.pluginInstallationId,
+      stableUserId: requestRecord.correlation?.stableUserId,
+      requestedSessionId: requestRecord.correlation?.requestedSessionId,
+      effectiveSessionId: requestRecord.correlation?.effectiveSessionId,
     });
   });
 

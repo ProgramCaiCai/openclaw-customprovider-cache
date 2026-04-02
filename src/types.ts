@@ -76,8 +76,23 @@ export type NormalizedPluginConfig = {
 };
 
 export type StableIdentity = {
+  installationId: string;
   userId: string;
   fallbackSessionId: string;
+};
+
+export type CorrelationEnvelope = {
+  pluginInstallationId: string;
+  stableUserId: string;
+  provider: string;
+  api: ProviderApi;
+  model?: string;
+  requestedSessionId?: string;
+  effectiveSessionId?: string;
+  recoverySessionId?: string;
+  executionClass?: RequestExecutionClass;
+  normalizationKey?: string;
+  normalizationReplaySource?: "fresh" | "persisted";
 };
 
 export type FetchRewriteRule = {
@@ -180,6 +195,7 @@ export type ForwardedRequestLogRecord = {
     effectivePromptCacheKey?: string;
     recoverySessionOverrideApplied?: boolean;
   };
+  correlation?: CorrelationEnvelope;
 };
 
 export type ForwardedResponseBodyState =
@@ -208,6 +224,7 @@ export type ForwardedResponseLogRecord = {
   providerTerminalKind?: ProviderTerminalKind;
   normalizedErrorKind?: NormalizedProviderErrorKind;
   errorPolicyKind?: ErrorPolicyKind;
+  correlation?: CorrelationEnvelope;
 };
 
 export type ForwardedResponseSummaryLogRecord = {
@@ -226,6 +243,7 @@ export type ForwardedResponseSummaryLogRecord = {
   normalizedErrorKind?: NormalizedProviderErrorKind;
   errorPolicyKind?: ErrorPolicyKind;
   streamIntegrity?: StreamIntegrityTelemetry;
+  correlation?: CorrelationEnvelope;
 };
 
 export type ForwardedRequestLogger = {
@@ -238,6 +256,7 @@ export type ForwardedRequestLogger = {
     headers: Headers;
     bodyBuffer: Buffer;
     requestNormalization?: ForwardedRequestLogRecord["requestNormalization"];
+    correlation?: CorrelationEnvelope;
   }) => Promise<void>;
   appendResponse: (record: {
     requestId: string;
@@ -248,6 +267,7 @@ export type ForwardedRequestLogger = {
     semanticState?: SemanticState;
     semanticError?: SemanticFailureInfo;
     executionClass?: RequestExecutionClass;
+    correlation?: CorrelationEnvelope;
   }) => Promise<void>;
   appendResponseSummary: (record: {
     requestId: string;
@@ -259,6 +279,7 @@ export type ForwardedRequestLogger = {
     executionClass?: RequestExecutionClass;
     transportStatus?: number;
     streamIntegrity?: StreamIntegrityTelemetry;
+    correlation?: CorrelationEnvelope;
   }) => Promise<void>;
   flush: () => Promise<void>;
 };

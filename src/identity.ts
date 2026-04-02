@@ -16,6 +16,7 @@ function shortHash(value: string): string {
 function buildStableIdentity(prefix: string, installationId: string): StableIdentity {
   const normalizedPrefix = prefix.trim().replace(/[^a-zA-Z0-9_-]+/g, "-");
   return {
+    installationId,
     userId: `${normalizedPrefix}-${installationId}`,
     fallbackSessionId: `${normalizedPrefix}-session-${shortHash(installationId)}`,
   };
@@ -29,6 +30,7 @@ export async function resolveStableIdentity(params: {
 }): Promise<StableIdentity> {
   if (params.userIdOverride) {
     return {
+      installationId: shortHash(params.userIdOverride),
       userId: params.userIdOverride,
       fallbackSessionId: `${params.prefix}-session-${shortHash(params.userIdOverride)}`,
     };

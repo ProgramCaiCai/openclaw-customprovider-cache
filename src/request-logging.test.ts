@@ -30,6 +30,13 @@ describe("createForwardedRequestLogger", () => {
         status: 200,
         headers: { "content-type": "application/json" },
       }),
+      correlation: {
+        pluginInstallationId: "install-123",
+        stableUserId: "openclaw-user",
+        provider: "openai",
+        api: "openai-responses",
+        model: "gpt-5.4",
+      },
     });
     await logger?.flush();
 
@@ -40,6 +47,13 @@ describe("createForwardedRequestLogger", () => {
       bodyState: "captured",
       truncated: false,
       body: { ok: true },
+      correlation: {
+        pluginInstallationId: "install-123",
+        stableUserId: "openclaw-user",
+        provider: "openai",
+        api: "openai-responses",
+        model: "gpt-5.4",
+      },
     });
     expect(line.semanticState).toBeUndefined();
   });
@@ -69,6 +83,17 @@ describe("createForwardedRequestLogger", () => {
         droppedDuplicateProviderInputIds: ["rs_dup"],
         droppedDuplicateProviderInputCount: 1,
       },
+      correlation: {
+        pluginInstallationId: "install-123",
+        stableUserId: "openclaw-user",
+        provider: "openai",
+        api: "openai-responses",
+        model: "gpt-5.2",
+        requestedSessionId: "session-stable",
+        effectiveSessionId: "session-stable",
+        normalizationKey: "norm-123",
+        normalizationReplaySource: "fresh",
+      },
     });
     await logger?.flush();
 
@@ -79,6 +104,17 @@ describe("createForwardedRequestLogger", () => {
       requestNormalization: {
         droppedDuplicateProviderInputIds: ["rs_dup"],
         droppedDuplicateProviderInputCount: 1,
+      },
+      correlation: {
+        pluginInstallationId: "install-123",
+        stableUserId: "openclaw-user",
+        provider: "openai",
+        api: "openai-responses",
+        model: "gpt-5.2",
+        requestedSessionId: "session-stable",
+        effectiveSessionId: "session-stable",
+        normalizationKey: "norm-123",
+        normalizationReplaySource: "fresh",
       },
     });
   });
