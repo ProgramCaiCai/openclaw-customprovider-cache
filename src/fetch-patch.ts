@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 
 import { classifySemanticFailure } from "./semantic-failure.js";
+import {
+  createInMemorySessionRecoveryTracker,
+  type SessionRecoveryOutcome,
+  type SessionRecoveryTracker,
+} from "./session-recovery.js";
 import { createStreamTracker } from "./stream-inspector.js";
 import { detectSubagentResultStopgap } from "./subagent-result-stopgap.js";
 import type {
@@ -199,23 +204,6 @@ export function classifyExecutionClass(promptText: string): RequestExecutionClas
   return "unknown";
 }
 
-const SESSION_OVERLOAD_THRESHOLD = 2;
-const SESSION_OVERLOAD_COOLDOWN_MS = 10 * 60 * 1000;
-
-type SessionRecoveryState = {
-  failureCount: number;
-  lastFailureAt: number;
-  poisonedUntil?: number;
-  recoverySessionId?: string;
-};
-
-type SessionRecoveryOutcome = "success" | "overloaded";
-
-type SessionRecoveryTracker = {
-  selectSessionId(sessionId: string): string;
-  noteOutcome(sessionId: string, outcome: SessionRecoveryOutcome | undefined): void;
-};
-
 function extractOpenAiSessionId(headers: Headers, rawBody: Buffer, fallbackSessionId: string): string {
   const headerId = headers.get("session_id")?.trim() || headers.get("x-session-id")?.trim();
   if (headerId) {
@@ -230,69 +218,6 @@ function extractOpenAiSessionId(headers: Headers, rawBody: Buffer, fallbackSessi
 
   return fallbackSessionId;
 }
-
-function createRecoverySessionId(fallbackSessionId: string): string {
-  return `${fallbackSessionId}-recover-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
-}
-
-function createSessionRecoveryTracker(fallbackSessionId: string): SessionRecoveryTracker {
-  const states = new Map<string, SessionRecoveryState>();
-
-  const clearExpired = (sessionId: string, now: number): void => {
-    const entry = states.get(sessionId);
-    if (entry?.poisonedUntil && entry.poisonedUntil <= now) {
-      states.delete(sessionId);
-    }
-  };
-
-  const resolveSessionId = (sessionId: string, now: number, seen = new Set<string>()): string => {
-    clearExpired(sessionId, now);
-    if (seen.has(sessionId)) {
-      return sessionId;
-    }
-
-    const entry = states.get(sessionId);
-    if (!entry?.poisonedUntil || entry.poisonedUntil <= now || !entry.recoverySessionId) {
-      return sessionId;
-    }
-
-    seen.add(sessionId);
-    return resolveSessionId(entry.recoverySessionId, now, seen);
-  };
-
-  return {
-    selectSessionId(sessionId) {
-      return resolveSessionId(sessionId, Date.now());
-    },
-    noteOutcome(sessionId, outcome) {
-      if (!outcome) {
-        return;
-      }
-
-      if (outcome === "success") {
-        states.delete(sessionId);
-        return;
-      }
-
-      const now = Date.now();
-      const existing = states.get(sessionId);
-      const entry =
-        existing && now - existing.lastFailureAt <= SESSION_OVERLOAD_COOLDOWN_MS
-          ? existing
-          : { failureCount: 0, lastFailureAt: now };
-
-      entry.failureCount += 1;
-      entry.lastFailureAt = now;
-      if (entry.failureCount >= SESSION_OVERLOAD_THRESHOLD) {
-        entry.poisonedUntil = now + SESSION_OVERLOAD_COOLDOWN_MS;
-        entry.recoverySessionId ??= createRecoverySessionId(fallbackSessionId);
-      }
-
-      states.set(sessionId, entry);
-    },
-  };
-}
-
 function isOverloadText(value: string): boolean {
   return /overload|capacity|service_unavailable|temporarily unavailable|upstream-overloaded/.test(
     value.toLowerCase(),
@@ -425,6 +350,7 @@ function wrapInspectableStream(params: {
   requestUrl: string;
   response: Response;
   executionClass: RequestExecutionClass;
+  requestedSessionId?: string;
   mainLikePostFirstTokenFailureEscalation: boolean;
   effectiveSessionId?: string;
   sessionRecoveryTracker?: SessionRecoveryTracker;
@@ -467,7 +393,11 @@ function wrapInspectableStream(params: {
         semanticError,
       });
     }
-    if (params.sessionRecoveryTracker && params.effectiveSessionId) {
+    if (
+      params.sessionRecoveryTracker &&
+      params.requestedSessionId &&
+      params.effectiveSessionId
+    ) {
       const outcome = semanticError
         ? isSemanticOverload(semanticError)
           ? "overloaded"
@@ -475,7 +405,11 @@ function wrapInspectableStream(params: {
         : summary.semanticState === "completed"
           ? "success"
           : undefined;
-      params.sessionRecoveryTracker.noteOutcome(params.effectiveSessionId, outcome);
+      void params.sessionRecoveryTracker.noteOutcome({
+        requestedSessionId: params.requestedSessionId,
+        effectiveSessionId: params.effectiveSessionId,
+        outcome,
+      });
     }
     return semanticError;
   };
@@ -579,6 +513,7 @@ async function forwardRequest(params: {
   semanticFailureGating: boolean;
   mainLikePostFirstTokenFailureEscalation?: boolean;
   subagentResultStopgap: boolean;
+  requestedSessionId?: string;
   effectiveSessionId?: string;
   sessionRecoveryTracker?: SessionRecoveryTracker;
 }): Promise<Response> {
@@ -638,6 +573,7 @@ async function forwardRequest(params: {
     buildForwardInit(params.request, params.headers, params.bodyBuffer),
   );
   const inspectableStream = params.semanticFailureGating && isInspectableStream(params.matched, response);
+  const responseForLogging = requestId ? response.clone() : undefined;
 
   if (requestId) {
     void params.requestLogger?.appendResponse({
@@ -645,15 +581,28 @@ async function forwardRequest(params: {
       provider: params.matched.provider,
       api: params.matched.api,
       url: params.request.url,
-      response,
+      response: responseForLogging ?? response,
       executionClass: inspectableStream ? executionClass : undefined,
     });
   }
 
   if (!inspectableStream) {
-    if (params.sessionRecoveryTracker && params.effectiveSessionId) {
-      const outcome = await classifyNonStreamOutcome(response.clone());
-      params.sessionRecoveryTracker.noteOutcome(params.effectiveSessionId, outcome);
+    if (
+      params.sessionRecoveryTracker &&
+      params.requestedSessionId &&
+      params.effectiveSessionId
+    ) {
+      let outcome: SessionRecoveryOutcome | undefined;
+      try {
+        outcome = await classifyNonStreamOutcome(response.clone());
+      } catch {
+        outcome = undefined;
+      }
+      await params.sessionRecoveryTracker.noteOutcome({
+        requestedSessionId: params.requestedSessionId,
+        effectiveSessionId: params.effectiveSessionId,
+        outcome,
+      });
     }
     return response;
   }
@@ -665,6 +614,7 @@ async function forwardRequest(params: {
     requestUrl: params.request.url,
     response,
     executionClass: executionClass ?? "unknown",
+    requestedSessionId: params.requestedSessionId,
     mainLikePostFirstTokenFailureEscalation:
       params.mainLikePostFirstTokenFailureEscalation ?? true,
     effectiveSessionId: params.effectiveSessionId,
@@ -686,6 +636,7 @@ export function createPatchedFetch(
     stableUserId: string;
     fallbackSessionId: string;
     requestLogger?: ForwardedRequestLogger;
+    sessionRecoveryTracker?: SessionRecoveryTracker;
   },
 ): typeof globalThis.fetch {
   const normalizedRules = params.rules
@@ -695,7 +646,8 @@ export function createPatchedFetch(
     }))
     .filter((rule) => rule.baseUrl.length > 0)
     .sort((left, right) => right.baseUrl.length - left.baseUrl.length);
-  const sessionRecoveryTracker = createSessionRecoveryTracker(params.fallbackSessionId);
+  const sessionRecoveryTracker =
+    params.sessionRecoveryTracker ?? createInMemorySessionRecoveryTracker(params.fallbackSessionId);
 
   return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const request = new Request(input, init);
@@ -759,6 +711,7 @@ export function createPatchedFetch(
       mainLikePostFirstTokenFailureEscalation:
         params.mainLikePostFirstTokenFailureEscalation,
       subagentResultStopgap: params.subagentResultStopgap,
+      requestedSessionId,
       effectiveSessionId: rewritten.openaiSessionId,
       sessionRecoveryTracker,
     });

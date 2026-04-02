@@ -707,6 +707,142 @@ describe("SessionMetadataProxyService", () => {
     expect(responseRecord.semanticState).toBe("unknown-stream");
   });
 
+  it("reuses persisted recovery session mappings after service restart", async () => {
+    const stateDir = await createStateDir(tempDirs);
+    const seenSessionIds: string[] = [];
+    globalThis.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      const bodyText =
+        init?.body instanceof Uint8Array
+          ? Buffer.from(init.body).toString("utf8")
+          : typeof init?.body === "string"
+            ? init.body
+            : undefined;
+      const payload = bodyText ? (JSON.parse(bodyText) as { prompt_cache_key?: string }) : {};
+      const sessionId = headers.get("session_id") ?? payload.prompt_cache_key ?? "missing";
+      seenSessionIds.push(sessionId);
+
+      if (seenSessionIds.length <= 2) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              code: "service_unavailable_error",
+              message: "upstream overloaded",
+            },
+          }),
+          {
+            status: 503,
+            headers: { "content-type": "application/json" },
+          },
+        );
+      }
+
+      return new Response(
+        JSON.stringify({
+          headers: Object.fromEntries(headers.entries()),
+          body: payload,
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      );
+    });
+
+    const cfg = {
+      models: {
+        providers: {
+          openai: {
+            api: "openai-responses",
+            baseUrl: "https://openai.example.test/v1",
+            models: [],
+          },
+        },
+      },
+    };
+    const pluginConfig = {
+      providers: [],
+      semanticFailureGating: true,
+      subagentResultStopgap: true,
+      requestLogging: {
+        enabled: false,
+        path: undefined,
+      },
+      openai: {
+        injectPromptCacheKey: true,
+        injectSessionIdHeader: true,
+        scrubAssistantCommentaryReplay: true,
+      },
+      anthropic: {
+        injectMetadataUserId: true,
+        userId: undefined,
+        userIdPrefix: "openclaw",
+      },
+    };
+
+    const firstService = new SessionMetadataProxyService({
+      config: cfg,
+      pluginConfig,
+      stateDir,
+      logger: { info: () => {}, warn: () => {}, error: () => {} },
+    });
+
+    await firstService.start();
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const response = await fetch(`${cfg.models.providers.openai.baseUrl}/responses`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          session_id: "session-poisoned",
+        },
+        body: JSON.stringify({
+          model: "gpt-5.4",
+          input: [{ role: "user", content: `attempt-${attempt}` }],
+        }),
+      });
+      expect(response.status).toBe(503);
+      await response.text();
+    }
+
+    await firstService.stop();
+
+    const secondService = new SessionMetadataProxyService({
+      config: cfg,
+      pluginConfig,
+      stateDir,
+      logger: { info: () => {}, warn: () => {}, error: () => {} },
+    });
+
+    await secondService.start();
+
+    const response = await fetch(`${cfg.models.providers.openai.baseUrl}/responses`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        session_id: "session-poisoned",
+      },
+      body: JSON.stringify({
+        model: "gpt-5.4",
+        input: [{ role: "user", content: "recover" }],
+      }),
+    });
+
+    const payload = (await readJson(response)) as {
+      headers: Record<string, string>;
+      body: { prompt_cache_key?: string };
+    };
+
+    expect(seenSessionIds[0]).toBe("session-poisoned");
+    expect(seenSessionIds[1]).toBe("session-poisoned");
+    expect(seenSessionIds[2]).toMatch(/^openclaw-session-[a-f0-9]+-recover-/);
+    expect(payload.headers.session_id).toBe(seenSessionIds[2]);
+    expect(payload.headers["x-session-id"]).toBe(seenSessionIds[2]);
+    expect(payload.body.prompt_cache_key).toBe(seenSessionIds[2]);
+
+    await secondService.stop();
+  });
+
   it("does not patch providers configured for openai-completions", async () => {
     const cfg = {
       models: {

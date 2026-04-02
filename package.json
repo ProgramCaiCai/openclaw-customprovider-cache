@@ -25,6 +25,7 @@
     "src/subagent-result-stopgap.ts",
     "src/request-logging.ts",
     "src/stream-inspector.ts",
+    "src/session-recovery.ts",
     "src/proxy-service.ts",
     "src/types.ts"
   ],
