@@ -2,6 +2,10 @@ import {
   createPersistedSessionRecoveryTracker,
   type SessionRecoveryTracker,
 } from "./session-recovery.js";
+import {
+  createPersistedNormalizationLedger,
+  type NormalizationLedger,
+} from "./normalization-ledger.js";
 import { createPatchedFetch } from "./fetch-patch.js";
 import { resolveStableIdentity } from "./identity.js";
 import { createForwardedRequestLogger } from "./request-logging.js";
@@ -50,6 +54,7 @@ export class SessionMetadataProxyService {
   private originalFetch?: typeof globalThis.fetch;
   private requestLogger?: ForwardedRequestLogger;
   private sessionRecoveryTracker?: SessionRecoveryTracker;
+  private normalizationLedger?: NormalizationLedger;
   private running = false;
 
   constructor(params: ServiceParams) {
@@ -75,10 +80,15 @@ export class SessionMetadataProxyService {
       fallbackSessionId: identity.fallbackSessionId,
       logger: this.params.logger,
     });
+    this.normalizationLedger = await createPersistedNormalizationLedger({
+      stateDir: this.params.stateDir,
+      logger: this.params.logger,
+    });
     this.originalFetch = globalThis.fetch;
     globalThis.fetch = createPatchedFetch({
       originalFetch: this.originalFetch,
       requestLogger: this.requestLogger,
+      normalizationLedger: this.normalizationLedger,
       sessionRecoveryTracker: this.sessionRecoveryTracker,
       rules,
       stableUserId: identity.userId,
@@ -105,8 +115,10 @@ export class SessionMetadataProxyService {
       this.originalFetch = undefined;
     }
     await this.requestLogger?.flush();
+    await this.normalizationLedger?.flush();
     await this.sessionRecoveryTracker?.flush();
     this.requestLogger = undefined;
+    this.normalizationLedger = undefined;
     this.sessionRecoveryTracker = undefined;
     this.running = false;
     this.params.logger.info("openclaw-customprovider-cache disabled");

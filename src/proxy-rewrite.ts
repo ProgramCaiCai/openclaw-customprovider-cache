@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+
+import type { NormalizationLedger } from "./normalization-ledger.js";
 import type {
   ForwardedRequestLogRecord,
   NormalizedPluginConfig,
@@ -15,6 +18,7 @@ type RewriteParams = {
     overrideSessionId?: string;
   };
   anthropic: NormalizedPluginConfig["anthropic"];
+  normalizationLedger?: NormalizationLedger;
 };
 
 export type RewriteResult = {
@@ -136,6 +140,12 @@ function mergeRequestNormalization(
   const droppedOrphanFunctionCallOutputCallIds: string[] = [];
   let scrubbedAssistantReplayCount = 0;
   const scrubbedAssistantReplayRules: string[] = [];
+  let normalizationKey: string | undefined;
+  let normalizationReplaySource: "fresh" | "persisted" | undefined;
+  let requestedSessionId: string | undefined;
+  let effectiveSessionId: string | undefined;
+  let effectivePromptCacheKey: string | undefined;
+  let recoverySessionOverrideApplied: boolean | undefined;
 
   for (const part of parts) {
     if (!part) {
@@ -164,6 +174,13 @@ function mergeRequestNormalization(
         droppedOrphanFunctionCallOutputCallIds.push(callId);
       }
     }
+    normalizationKey = part.normalizationKey ?? normalizationKey;
+    normalizationReplaySource = part.normalizationReplaySource ?? normalizationReplaySource;
+    requestedSessionId = part.requestedSessionId ?? requestedSessionId;
+    effectiveSessionId = part.effectiveSessionId ?? effectiveSessionId;
+    effectivePromptCacheKey = part.effectivePromptCacheKey ?? effectivePromptCacheKey;
+    recoverySessionOverrideApplied =
+      part.recoverySessionOverrideApplied ?? recoverySessionOverrideApplied;
   }
 
   if (!hasData) {
@@ -173,17 +190,58 @@ function mergeRequestNormalization(
   return {
     droppedDuplicateProviderInputIds: [...droppedDuplicateProviderInputIds],
     droppedDuplicateProviderInputCount,
-    droppedOrphanFunctionCallOutputCount:
-      droppedOrphanFunctionCallOutputCount > 0 ? droppedOrphanFunctionCallOutputCount : undefined,
-    droppedOrphanFunctionCallOutputCallIds:
-      droppedOrphanFunctionCallOutputCallIds.length > 0
-        ? droppedOrphanFunctionCallOutputCallIds
-        : undefined,
-    scrubbedAssistantReplayCount:
-      scrubbedAssistantReplayCount > 0 ? scrubbedAssistantReplayCount : undefined,
-    scrubbedAssistantReplayRules:
-      scrubbedAssistantReplayRules.length > 0 ? scrubbedAssistantReplayRules : undefined,
+    ...(droppedOrphanFunctionCallOutputCount > 0
+      ? {
+          droppedOrphanFunctionCallOutputCount,
+          droppedOrphanFunctionCallOutputCallIds,
+        }
+      : {}),
+    ...(scrubbedAssistantReplayCount > 0
+      ? {
+          scrubbedAssistantReplayCount,
+          scrubbedAssistantReplayRules,
+        }
+      : {}),
+    ...(normalizationKey ? { normalizationKey } : {}),
+    ...(normalizationReplaySource ? { normalizationReplaySource } : {}),
+    ...(requestedSessionId ? { requestedSessionId } : {}),
+    ...(effectiveSessionId ? { effectiveSessionId } : {}),
+    ...(effectivePromptCacheKey ? { effectivePromptCacheKey } : {}),
+    ...(recoverySessionOverrideApplied ? { recoverySessionOverrideApplied } : {}),
   };
+}
+
+function sortStableValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => sortStableValue(entry));
+  }
+
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([key]) => key !== "prompt_cache_key")
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, sortStableValue(entry)]),
+  );
+}
+
+function buildNormalizationKey(
+  body: Record<string, unknown> | undefined,
+  requestedSessionId: string,
+  effectiveSessionId: string,
+): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        requestedSessionId,
+        effectiveSessionId,
+        body: sortStableValue(body),
+      }),
+    )
+    .digest("hex");
 }
 
 function dedupeOpenAiProviderInput(
@@ -410,6 +468,43 @@ export async function rewriteProxyRequest(params: RewriteParams): Promise<Rewrit
   let requestNormalization: RewriteResult["requestNormalization"];
 
   if (isOpenAiApi(params.api)) {
+    const requestedSessionId = pickSessionId(headers, jsonBody, params.fallbackSessionId);
+    const sessionId = params.openai.overrideSessionId ?? requestedSessionId;
+    const normalizationKey = buildNormalizationKey(jsonBody, requestedSessionId, sessionId);
+    const replayedDecision = params.normalizationLedger?.lookup({
+      requestedSessionId,
+      normalizationKey,
+    });
+
+    if (replayedDecision) {
+      jsonBody = JSON.parse(replayedDecision.normalizedBody) as Record<string, unknown>;
+      openaiSessionId = replayedDecision.effectiveSessionId;
+      requestNormalization = mergeRequestNormalization(replayedDecision.requestNormalization, {
+        droppedDuplicateProviderInputIds: [],
+        droppedDuplicateProviderInputCount: 0,
+        normalizationKey,
+        normalizationReplaySource: "persisted",
+        requestedSessionId,
+        effectiveSessionId: replayedDecision.effectiveSessionId,
+        effectivePromptCacheKey: replayedDecision.effectivePromptCacheKey,
+        recoverySessionOverrideApplied:
+          replayedDecision.effectiveSessionId !== requestedSessionId ? true : undefined,
+      });
+
+      if (params.openai.injectSessionIdHeader) {
+        headers.set("session_id", replayedDecision.effectiveSessionId);
+        headers.set("x-session-id", replayedDecision.effectiveSessionId);
+      }
+
+      return {
+        headers,
+        bodyBuffer: Buffer.from(replayedDecision.normalizedBody),
+        jsonBody,
+        openaiSessionId,
+        requestNormalization,
+      };
+    }
+
     const normalizedInput = dedupeOpenAiProviderInput(jsonBody);
     jsonBody = normalizedInput.jsonBody;
     requestNormalization = normalizedInput.requestNormalization;
@@ -434,8 +529,6 @@ export async function rewriteProxyRequest(params: RewriteParams): Promise<Rewrit
     );
     bodyChanged = bodyChanged || orphanedOutputs.changed;
 
-    const requestedSessionId = pickSessionId(headers, jsonBody, params.fallbackSessionId);
-    const sessionId = params.openai.overrideSessionId ?? requestedSessionId;
     openaiSessionId = sessionId;
 
     if (params.openai.injectPromptCacheKey) {
@@ -452,6 +545,21 @@ export async function rewriteProxyRequest(params: RewriteParams): Promise<Rewrit
         headers.set("x-session-id", sessionId);
       }
     }
+
+    requestNormalization = mergeRequestNormalization(requestNormalization, {
+      droppedDuplicateProviderInputIds: [],
+      droppedDuplicateProviderInputCount: 0,
+      normalizationKey,
+      normalizationReplaySource: "fresh",
+      requestedSessionId,
+      effectiveSessionId: sessionId,
+      effectivePromptCacheKey:
+        typeof jsonBody?.prompt_cache_key === "string" ? jsonBody.prompt_cache_key : undefined,
+      recoverySessionOverrideApplied:
+        params.openai.overrideSessionId && params.openai.overrideSessionId !== requestedSessionId
+          ? true
+          : undefined,
+    });
   }
 
   if (isAnthropicApi(params.api) && params.anthropic.injectMetadataUserId && jsonBody) {
@@ -469,6 +577,22 @@ export async function rewriteProxyRequest(params: RewriteParams): Promise<Rewrit
 
   const bodyBuffer =
     bodyChanged && jsonBody ? Buffer.from(JSON.stringify(jsonBody)) : Buffer.from(params.rawBody);
+
+  if (isOpenAiApi(params.api) && params.normalizationLedger && jsonBody && openaiSessionId) {
+    await params.normalizationLedger.record({
+      requestedSessionId: requestNormalization?.requestedSessionId ?? openaiSessionId,
+      normalizationKey: requestNormalization?.normalizationKey ?? buildNormalizationKey(
+        jsonBody,
+        requestNormalization?.requestedSessionId ?? openaiSessionId,
+        openaiSessionId,
+      ),
+      effectiveSessionId: openaiSessionId,
+      effectivePromptCacheKey:
+        typeof jsonBody.prompt_cache_key === "string" ? jsonBody.prompt_cache_key : undefined,
+      normalizedBody: bodyBuffer.toString("utf8"),
+      requestNormalization,
+    });
+  }
 
   return {
     headers,

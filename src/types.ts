@@ -151,6 +151,12 @@ export type ForwardedRequestLogRecord = {
     droppedOrphanFunctionCallOutputCallIds?: string[];
     scrubbedAssistantReplayCount?: number;
     scrubbedAssistantReplayRules?: string[];
+    normalizationKey?: string;
+    normalizationReplaySource?: "fresh" | "persisted";
+    requestedSessionId?: string;
+    effectiveSessionId?: string;
+    effectivePromptCacheKey?: string;
+    recoverySessionOverrideApplied?: boolean;
   };
 };
 

@@ -155,10 +155,10 @@ describe("createPatchedFetch", () => {
     ]);
     expect(requestRecords).toContainEqual(
       expect.objectContaining({
-        requestNormalization: {
+        requestNormalization: expect.objectContaining({
           droppedDuplicateProviderInputIds: ["rs_dup"],
           droppedDuplicateProviderInputCount: 1,
-        },
+        }),
       }),
     );
   });
@@ -248,14 +248,76 @@ describe("createPatchedFetch", () => {
     ]);
     expect(requestRecords).toContainEqual(
       expect.objectContaining({
-        requestNormalization: {
+        requestNormalization: expect.objectContaining({
           droppedDuplicateProviderInputIds: [],
           droppedDuplicateProviderInputCount: 0,
           scrubbedAssistantReplayCount: 2,
           scrubbedAssistantReplayRules: ["pseudo-tool-artifact"],
-        },
+        }),
       }),
     );
+  });
+
+  it("passes a logger-safe response clone so downstream body reads do not consume logging", async () => {
+    let loggedBody = "";
+    const originalFetch = vi.fn(async () => {
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    const requestLogger: ForwardedRequestLogger = {
+      appendRequest: async () => undefined,
+      appendResponse: async ({ response }) => {
+        await Promise.resolve();
+        loggedBody = await response.text();
+      },
+      appendResponseSummary: async () => undefined,
+      flush: async () => undefined,
+    };
+
+    const fetchWithPatch = createPatchedFetch({
+      originalFetch,
+      rules: [
+        {
+          provider: "openai",
+          api: "openai-responses",
+          baseUrl: "https://api.example.test/v1",
+        },
+      ],
+      stableUserId: "openclaw-user",
+      fallbackSessionId: "session-stable",
+      semanticFailureGating: false,
+      subagentResultStopgap: false,
+      openai: {
+        injectPromptCacheKey: true,
+        injectSessionIdHeader: true,
+        scrubAssistantCommentaryReplay: true,
+      },
+      anthropic: {
+        injectMetadataUserId: true,
+        userId: undefined,
+        userIdPrefix: "openclaw",
+      },
+      requestLogger,
+    });
+
+    const response = await fetchWithPatch("https://api.example.test/v1/responses", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-5.4",
+        input: [{ role: "user", content: "hello" }],
+      }),
+    });
+
+    expect(await response.json()).toEqual({ ok: true });
+    await Promise.resolve();
+
+    expect(loggedBody).toBe(JSON.stringify({ ok: true }));
   });
 
   it("rotates away from a poisoned OpenAI session after repeated overloaded 503s", async () => {

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import type { NormalizationLedger } from "./normalization-ledger.js";
 import { classifySemanticFailure } from "./semantic-failure.js";
 import {
   createInMemorySessionRecoveryTracker,
@@ -636,6 +637,7 @@ export function createPatchedFetch(
     stableUserId: string;
     fallbackSessionId: string;
     requestLogger?: ForwardedRequestLogger;
+    normalizationLedger?: NormalizationLedger;
     sessionRecoveryTracker?: SessionRecoveryTracker;
   },
 ): typeof globalThis.fetch {
@@ -697,6 +699,7 @@ export function createPatchedFetch(
           overrideSessionId && overrideSessionId !== requestedSessionId ? overrideSessionId : undefined,
       },
       anthropic: params.anthropic,
+      normalizationLedger: params.normalizationLedger,
     });
 
     return forwardRequest({

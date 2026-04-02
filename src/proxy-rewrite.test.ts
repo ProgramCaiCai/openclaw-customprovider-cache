@@ -1,8 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
+import { afterEach, describe, expect, it } from "vitest";
+
+import { createPersistedNormalizationLedger } from "./normalization-ledger.js";
 import { rewriteProxyRequest } from "./proxy-rewrite.js";
 
 describe("rewriteProxyRequest", () => {
+  const tempDirs: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
   it("fills OpenAI prompt_cache_key and session headers from a stable fallback", async () => {
     const body = { model: "gpt-5.2", input: [{ role: "user", content: "hello" }] };
     const rewritten = await rewriteProxyRequest({
@@ -68,7 +79,7 @@ describe("rewriteProxyRequest", () => {
         { id: "rs_keep", type: "reasoning", summary: [] },
       ],
     });
-    expect(rewritten.requestNormalization).toEqual({
+    expect(rewritten.requestNormalization).toMatchObject({
       droppedDuplicateProviderInputIds: ["rs_dup"],
       droppedDuplicateProviderInputCount: 1,
     });
@@ -109,7 +120,7 @@ describe("rewriteProxyRequest", () => {
         { type: "message", role: "assistant", phase: "final_answer", content: "Final answer." },
       ],
     });
-    expect(rewritten.requestNormalization).toEqual({
+    expect(rewritten.requestNormalization).toMatchObject({
       droppedDuplicateProviderInputIds: [],
       droppedDuplicateProviderInputCount: 0,
       scrubbedAssistantReplayCount: 1,
@@ -156,7 +167,7 @@ describe("rewriteProxyRequest", () => {
         { type: "message", role: "assistant", phase: "final_answer", content: "Final answer." },
       ],
     });
-    expect(rewritten.requestNormalization).toEqual({
+    expect(rewritten.requestNormalization).toMatchObject({
       droppedDuplicateProviderInputIds: [],
       droppedDuplicateProviderInputCount: 0,
       scrubbedAssistantReplayCount: 1,
@@ -204,7 +215,7 @@ describe("rewriteProxyRequest", () => {
         { type: "message", role: "assistant", phase: "final_answer", content: "Final answer." },
       ],
     });
-    expect(rewritten.requestNormalization).toEqual({
+    expect(rewritten.requestNormalization).toMatchObject({
       droppedDuplicateProviderInputIds: [],
       droppedDuplicateProviderInputCount: 0,
       scrubbedAssistantReplayCount: 2,
@@ -269,7 +280,7 @@ describe("rewriteProxyRequest", () => {
         { type: "message", role: "assistant", phase: "final_answer", content: "Done." },
       ],
     });
-    expect(rewritten.requestNormalization).toEqual({
+    expect(rewritten.requestNormalization).toMatchObject({
       droppedDuplicateProviderInputIds: [],
       droppedDuplicateProviderInputCount: 0,
       scrubbedAssistantReplayCount: 1,
@@ -336,7 +347,7 @@ describe("rewriteProxyRequest", () => {
         { type: "message", role: "assistant", phase: "final_answer", content: "Done." },
       ],
     });
-    expect(rewritten.requestNormalization).toEqual({
+    expect(rewritten.requestNormalization).toMatchObject({
       droppedDuplicateProviderInputIds: [],
       droppedDuplicateProviderInputCount: 0,
       droppedOrphanFunctionCallOutputCount: 1,
@@ -386,7 +397,12 @@ describe("rewriteProxyRequest", () => {
     expect(rewritten.jsonBody).toMatchObject({
       input: body.input,
     });
-    expect(rewritten.requestNormalization).toBeUndefined();
+    expect(rewritten.requestNormalization).toMatchObject({
+      normalizationReplaySource: "fresh",
+      requestedSessionId: "session-stable",
+      effectiveSessionId: "session-stable",
+      effectivePromptCacheKey: "session-stable",
+    });
   });
 
   it("does not scrub user messages that mention pseudo-tool artifact text", async () => {
@@ -424,7 +440,12 @@ describe("rewriteProxyRequest", () => {
     expect(rewritten.jsonBody).toMatchObject({
       input: body.input,
     });
-    expect(rewritten.requestNormalization).toBeUndefined();
+    expect(rewritten.requestNormalization).toMatchObject({
+      normalizationReplaySource: "fresh",
+      requestedSessionId: "session-stable",
+      effectiveSessionId: "session-stable",
+      effectivePromptCacheKey: "session-stable",
+    });
   });
 
   it("does not scrub assistant replay items when the feature flag is disabled", async () => {
@@ -459,7 +480,12 @@ describe("rewriteProxyRequest", () => {
     expect(rewritten.jsonBody).toMatchObject({
       input: body.input,
     });
-    expect(rewritten.requestNormalization).toBeUndefined();
+    expect(rewritten.requestNormalization).toMatchObject({
+      normalizationReplaySource: "fresh",
+      requestedSessionId: "session-stable",
+      effectiveSessionId: "session-stable",
+      effectivePromptCacheKey: "session-stable",
+    });
   });
 
   it("overrides a poisoned OpenAI session id across headers and prompt_cache_key", async () => {
@@ -499,6 +525,147 @@ describe("rewriteProxyRequest", () => {
     expect(rewritten.headers.get("session_id")).toBe("session-recovered");
     expect(rewritten.headers.get("x-session-id")).toBe("session-recovered");
     expect(rewritten.openaiSessionId).toBe("session-recovered");
+  });
+
+  it("replays persisted normalization decisions for identical requests across ledger reloads", async () => {
+    const stateDir = await createStateDir(tempDirs);
+    const body = {
+      model: "gpt-5.4",
+      input: [
+        { type: "message", role: "user", content: "hello" },
+        { type: "message", role: "assistant", phase: "commentary", content: "I will check that now." },
+        { type: "message", role: "assistant", phase: "final_answer", content: "Final answer." },
+      ],
+    };
+    const firstLedger = await createPersistedNormalizationLedger({
+      stateDir,
+      logger: { info: () => {}, warn: () => {}, error: () => {} },
+    });
+
+    const firstRewrite = await rewriteProxyRequest({
+      provider: "openai",
+      api: "openai-responses",
+      headers: new Headers({ "content-type": "application/json" }),
+      rawBody: Buffer.from(JSON.stringify(body)),
+      stableUserId: "openclaw-user",
+      fallbackSessionId: "session-stable",
+      openai: {
+        injectPromptCacheKey: true,
+        injectSessionIdHeader: true,
+        scrubAssistantCommentaryReplay: true,
+      },
+      anthropic: {
+        injectMetadataUserId: true,
+        userId: undefined,
+        userIdPrefix: "openclaw",
+      },
+      normalizationLedger: firstLedger,
+    });
+    await firstLedger.flush();
+
+    const secondLedger = await createPersistedNormalizationLedger({
+      stateDir,
+      logger: { info: () => {}, warn: () => {}, error: () => {} },
+    });
+    const replayedRewrite = await rewriteProxyRequest({
+      provider: "openai",
+      api: "openai-responses",
+      headers: new Headers({ "content-type": "application/json" }),
+      rawBody: Buffer.from(JSON.stringify(body)),
+      stableUserId: "openclaw-user",
+      fallbackSessionId: "session-stable",
+      openai: {
+        injectPromptCacheKey: true,
+        injectSessionIdHeader: true,
+        scrubAssistantCommentaryReplay: false,
+      },
+      anthropic: {
+        injectMetadataUserId: true,
+        userId: undefined,
+        userIdPrefix: "openclaw",
+      },
+      normalizationLedger: secondLedger,
+    });
+
+    expect(replayedRewrite.jsonBody).toEqual(firstRewrite.jsonBody);
+    expect(replayedRewrite.requestNormalization).toMatchObject({
+      normalizationReplaySource: "persisted",
+      requestedSessionId: "session-stable",
+      effectiveSessionId: "session-stable",
+      effectivePromptCacheKey: "session-stable",
+      scrubbedAssistantReplayCount: 1,
+      scrubbedAssistantReplayRules: ["phase-commentary"],
+    });
+  });
+
+  it("does not reuse a persisted normalization when the effective session id changed", async () => {
+    const stateDir = await createStateDir(tempDirs);
+    const body = {
+      model: "gpt-5.2",
+      input: [{ role: "user", content: "hello" }],
+      prompt_cache_key: "session-poisoned",
+    };
+    const ledger = await createPersistedNormalizationLedger({
+      stateDir,
+      logger: { info: () => {}, warn: () => {}, error: () => {} },
+    });
+
+    await rewriteProxyRequest({
+      provider: "openai",
+      api: "openai-responses",
+      headers: new Headers({
+        "content-type": "application/json",
+        session_id: "session-poisoned",
+      }),
+      rawBody: Buffer.from(JSON.stringify(body)),
+      stableUserId: "openclaw-user",
+      fallbackSessionId: "session-stable",
+      openai: {
+        injectPromptCacheKey: true,
+        injectSessionIdHeader: true,
+        overrideSessionId: "session-recovered",
+        scrubAssistantCommentaryReplay: true,
+      },
+      anthropic: {
+        injectMetadataUserId: true,
+        userId: undefined,
+        userIdPrefix: "openclaw",
+      },
+      normalizationLedger: ledger,
+    });
+    await ledger.flush();
+
+    const replayedWithoutOverride = await rewriteProxyRequest({
+      provider: "openai",
+      api: "openai-responses",
+      headers: new Headers({
+        "content-type": "application/json",
+        session_id: "session-poisoned",
+      }),
+      rawBody: Buffer.from(JSON.stringify(body)),
+      stableUserId: "openclaw-user",
+      fallbackSessionId: "session-stable",
+      openai: {
+        injectPromptCacheKey: true,
+        injectSessionIdHeader: true,
+        scrubAssistantCommentaryReplay: true,
+      },
+      anthropic: {
+        injectMetadataUserId: true,
+        userId: undefined,
+        userIdPrefix: "openclaw",
+      },
+      normalizationLedger: ledger,
+    });
+
+    expect(replayedWithoutOverride.requestNormalization).toMatchObject({
+      normalizationReplaySource: "fresh",
+      requestedSessionId: "session-poisoned",
+      effectiveSessionId: "session-poisoned",
+    });
+    expect(replayedWithoutOverride.jsonBody).toMatchObject({
+      prompt_cache_key: "session-poisoned",
+    });
   });
 
   it("injects metadata.user_id into Anthropic requests without overwriting metadata", async () => {
@@ -560,3 +727,9 @@ describe("rewriteProxyRequest", () => {
     expect(rewritten.jsonBody).toEqual(body);
   });
 });
+
+async function createStateDir(tempDirs: string[]): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "openclaw-customprovider-cache-normalization-"));
+  tempDirs.push(dir);
+  return dir;
+}
