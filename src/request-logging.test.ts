@@ -194,6 +194,7 @@ describe("createForwardedRequestLogger", () => {
       status: 401,
       providerStatus: 401,
       normalizedErrorKind: "auth",
+      errorPolicyKind: "auth-error",
       body: {
         error: {
           code: 401,
@@ -261,6 +262,7 @@ describe("createForwardedRequestLogger", () => {
       transportStatus: 200,
       providerStatus: 529,
       normalizedErrorKind: "rate-limit",
+      errorPolicyKind: "rate-limit-error",
       semanticError: {
         status: 429,
         code: "RATE_LIMIT",
@@ -282,6 +284,7 @@ describe("createForwardedRequestLogger", () => {
       semanticState: "ended-empty",
       providerTerminalKind: "ended-empty",
       normalizedErrorKind: "invalid-stream",
+      errorPolicyKind: "invalid-stream-error",
       semanticError: {
         status: 408,
         code: "STREAM_ABORTED",
@@ -317,6 +320,7 @@ describe("createForwardedRequestLogger", () => {
       providerTerminalKind: "completed",
       executionClass: "main-like",
       transportStatus: 200,
+      errorPolicyKind: "none",
     });
     expect(line.providerStatus).toBeUndefined();
     expect(line.normalizedErrorKind).toBeUndefined();

@@ -109,6 +109,17 @@ export type NormalizedProviderErrorKind =
   | "upstream-overloaded"
   | "invalid-stream";
 
+export type ErrorPolicyKind =
+  | "none"
+  | "transport-error"
+  | "auth-error"
+  | "rate-limit-error"
+  | "overload-error"
+  | "invalid-stream-error"
+  | "semantic-provider-error"
+  | "synthetic-stopgap-error"
+  | "retryable-stream-error";
+
 export type ProviderTerminalKind =
   | "completed"
   | "semantic-error"
@@ -196,6 +207,7 @@ export type ForwardedResponseLogRecord = {
   providerStatus?: number;
   providerTerminalKind?: ProviderTerminalKind;
   normalizedErrorKind?: NormalizedProviderErrorKind;
+  errorPolicyKind?: ErrorPolicyKind;
 };
 
 export type ForwardedResponseSummaryLogRecord = {
@@ -212,6 +224,7 @@ export type ForwardedResponseSummaryLogRecord = {
   providerStatus?: number;
   providerTerminalKind?: ProviderTerminalKind;
   normalizedErrorKind?: NormalizedProviderErrorKind;
+  errorPolicyKind?: ErrorPolicyKind;
   streamIntegrity?: StreamIntegrityTelemetry;
 };
 

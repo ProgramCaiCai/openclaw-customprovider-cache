@@ -616,6 +616,7 @@ describe("SessionMetadataProxyService", () => {
       semanticState: string;
       providerStatus?: number;
       normalizedErrorKind?: string;
+      errorPolicyKind?: string;
       streamIntegrity?: {
         terminalEventType?: string;
       };
@@ -624,6 +625,7 @@ describe("SessionMetadataProxyService", () => {
     expect(summaryRecord.semanticState).toBe("error");
     expect(summaryRecord.providerStatus).toBe(529);
     expect(summaryRecord.normalizedErrorKind).toBe("upstream-overloaded");
+    expect(summaryRecord.errorPolicyKind).toBe("overload-error");
     expect(summaryRecord.streamIntegrity).toMatchObject({
       terminalEventType: "response.failed",
     });

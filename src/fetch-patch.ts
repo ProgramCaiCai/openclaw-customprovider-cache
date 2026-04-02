@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { resolveErrorPolicy } from "./error-policy.js";
 import type { NormalizationLedger } from "./normalization-ledger.js";
 import { classifySemanticFailure } from "./semantic-failure.js";
 import {
@@ -219,44 +220,23 @@ function extractOpenAiSessionId(headers: Headers, rawBody: Buffer, fallbackSessi
 
   return fallbackSessionId;
 }
-function isOverloadText(value: string): boolean {
-  return /overload|capacity|service_unavailable|temporarily unavailable|upstream-overloaded/.test(
-    value.toLowerCase(),
-  );
-}
-
-function isSemanticOverload(semanticError: SemanticFailureInfo): boolean {
-  return (
-    semanticError.status === 503 ||
-    semanticError.providerStatus === 503 ||
-    semanticError.providerStatus === 529 ||
-    semanticError.code === "SERVER_OVERLOADED" ||
-    semanticError.classification === "server-overloaded" ||
-    isOverloadText(`${semanticError.code ?? ""} ${semanticError.message ?? ""}`)
-  );
-}
-
 async function classifyNonStreamOutcome(response: Response): Promise<SessionRecoveryOutcome | undefined> {
   if (response.ok) {
     return "success";
   }
 
-  if (response.status === 503 || response.status === 529) {
-    return "overloaded";
-  }
-
   const contentType = response.headers.get("content-type");
   const isTextLike = isJsonContentType(contentType) || (contentType ?? "").toLowerCase().includes("text/");
-  if (!isTextLike) {
-    return undefined;
-  }
-
-  try {
-    const bodyText = await response.text();
-    return isOverloadText(bodyText) ? "overloaded" : undefined;
-  } catch {
-    return undefined;
-  }
+  const bodyText = isTextLike ? await response.text().catch(() => undefined) : undefined;
+  const body =
+    isJsonContentType(contentType) && bodyText
+      ? JSON.parse(bodyText) as unknown
+      : bodyText;
+  const policy = resolveErrorPolicy({
+    transportStatus: response.status,
+    body,
+  });
+  return policy.kind === "overload-error" ? "overloaded" : undefined;
 }
 
 function isInspectableStream(rule: FetchRewriteRule, response: Response): boolean {
@@ -401,7 +381,10 @@ function wrapInspectableStream(params: {
       params.effectiveSessionId
     ) {
       const outcome = semanticError
-        ? isSemanticOverload(semanticError)
+        ? resolveErrorPolicy({
+            semanticState: summary.semanticState,
+            semanticError,
+          }).kind === "overload-error"
           ? "overloaded"
           : undefined
         : summary.semanticState === "completed"
