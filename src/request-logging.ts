@@ -166,6 +166,7 @@ function createRequestLogRecord(input: {
 
 function createResponseLogRecord(input: {
   requestId: string;
+  attemptId?: string;
   provider: string;
   api: ForwardedResponseLogRecord["api"];
   url: string;
@@ -191,6 +192,7 @@ function createResponseLogRecord(input: {
   return {
     event: "response",
     requestId: input.requestId,
+    attemptId: input.attemptId,
     timestamp: new Date().toISOString(),
     provider: input.provider,
     api: input.api,
@@ -215,10 +217,12 @@ function createResponseLogRecord(input: {
 
 function createResponseSummaryLogRecord(input: {
   requestId: string;
+  attemptId?: string;
   provider: string;
   api: ForwardedResponseSummaryLogRecord["api"];
   url: string;
   semanticState: ForwardedResponseSummaryLogRecord["semanticState"];
+  attemptAbandoned?: boolean;
   semanticError?: SemanticFailureInfo;
   executionClass?: RequestExecutionClass;
   transportStatus?: number;
@@ -234,6 +238,8 @@ function createResponseSummaryLogRecord(input: {
   return {
     event: "response-summary",
     requestId: input.requestId,
+    attemptId: input.attemptId,
+    attemptAbandoned: input.attemptAbandoned,
     timestamp: new Date().toISOString(),
     provider: input.provider,
     api: input.api,
@@ -424,6 +430,7 @@ export function createForwardedRequestLogger(params: {
           provider: record.provider,
           api: record.api,
           url: record.url,
+          attemptId: record.attemptId,
           status: record.response.status,
           headers: record.response.headers,
           body: capturedBody.body,

@@ -82,6 +82,7 @@ export type StableIdentity = {
 };
 
 export type CorrelationEnvelope = {
+  attemptId?: string;
   pluginInstallationId: string;
   stableUserId: string;
   provider: string;
@@ -208,6 +209,7 @@ export type ForwardedResponseBodyState =
 export type ForwardedResponseLogRecord = {
   event: "response";
   requestId: string;
+  attemptId?: string;
   timestamp: string;
   provider: string;
   api: ProviderApi;
@@ -230,6 +232,8 @@ export type ForwardedResponseLogRecord = {
 export type ForwardedResponseSummaryLogRecord = {
   event: "response-summary";
   requestId: string;
+  attemptId?: string;
+  attemptAbandoned?: boolean;
   timestamp: string;
   provider: string;
   api: ProviderApi;
@@ -268,13 +272,16 @@ export type ForwardedRequestLogger = {
     semanticError?: SemanticFailureInfo;
     executionClass?: RequestExecutionClass;
     correlation?: CorrelationEnvelope;
+    attemptId?: string;
   }) => Promise<void>;
   appendResponseSummary: (record: {
     requestId: string;
+    attemptId?: string;
     provider: string;
     api: ProviderApi;
     url: string;
     semanticState: Exclude<SemanticState, "unknown-stream">;
+    attemptAbandoned?: boolean;
     semanticError?: SemanticFailureInfo;
     executionClass?: RequestExecutionClass;
     transportStatus?: number;

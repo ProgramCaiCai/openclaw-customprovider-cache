@@ -251,11 +251,13 @@ describe("createForwardedRequestLogger", () => {
 
     await logger?.appendResponseSummary({
       requestId: "req-summary",
+      attemptId: "attempt-1",
       provider: "openai",
       api: "openai-responses",
       url: "https://example.test/v1/responses",
       transportStatus: 200,
       semanticState: "error",
+      attemptAbandoned: true,
       executionClass: "subagent-like",
       semanticError: {
         status: 429,
@@ -292,6 +294,8 @@ describe("createForwardedRequestLogger", () => {
     expect(rateLimitLine).toMatchObject({
       event: "response-summary",
       requestId: "req-summary",
+      attemptId: "attempt-1",
+      attemptAbandoned: true,
       semanticState: "error",
       providerTerminalKind: "semantic-error",
       executionClass: "subagent-like",

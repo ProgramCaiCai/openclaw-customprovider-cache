@@ -1,4 +1,8 @@
 import {
+  createPersistedAttemptLedger,
+  type AttemptLedger,
+} from "./attempt-ledger.js";
+import {
   createPersistedSessionRecoveryTracker,
   type SessionRecoveryTracker,
 } from "./session-recovery.js";
@@ -55,6 +59,7 @@ export class SessionMetadataProxyService {
   private requestLogger?: ForwardedRequestLogger;
   private sessionRecoveryTracker?: SessionRecoveryTracker;
   private normalizationLedger?: NormalizationLedger;
+  private attemptLedger?: AttemptLedger;
   private running = false;
 
   constructor(params: ServiceParams) {
@@ -84,12 +89,17 @@ export class SessionMetadataProxyService {
       stateDir: this.params.stateDir,
       logger: this.params.logger,
     });
+    this.attemptLedger = await createPersistedAttemptLedger({
+      stateDir: this.params.stateDir,
+      logger: this.params.logger,
+    });
     this.originalFetch = globalThis.fetch;
     globalThis.fetch = createPatchedFetch({
       originalFetch: this.originalFetch,
       requestLogger: this.requestLogger,
       normalizationLedger: this.normalizationLedger,
       sessionRecoveryTracker: this.sessionRecoveryTracker,
+      attemptLedger: this.attemptLedger,
       pluginInstallationId: identity.installationId,
       rules,
       stableUserId: identity.userId,
@@ -118,9 +128,11 @@ export class SessionMetadataProxyService {
     await this.requestLogger?.flush();
     await this.normalizationLedger?.flush();
     await this.sessionRecoveryTracker?.flush();
+    await this.attemptLedger?.flush();
     this.requestLogger = undefined;
     this.normalizationLedger = undefined;
     this.sessionRecoveryTracker = undefined;
+    this.attemptLedger = undefined;
     this.running = false;
     this.params.logger.info("openclaw-customprovider-cache disabled");
   }

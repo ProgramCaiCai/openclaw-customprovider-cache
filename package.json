@@ -25,6 +25,7 @@
     "src/subagent-result-stopgap.ts",
     "src/request-logging.ts",
     "src/error-policy.ts",
+    "src/attempt-ledger.ts",
     "src/stream-inspector.ts",
     "src/session-recovery.ts",
     "src/normalization-ledger.ts",

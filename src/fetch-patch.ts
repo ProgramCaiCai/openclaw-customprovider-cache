@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import type { AttemptLedger } from "./attempt-ledger.js";
 import { resolveErrorPolicy } from "./error-policy.js";
 import type { NormalizationLedger } from "./normalization-ledger.js";
 import { classifySemanticFailure } from "./semantic-failure.js";
@@ -277,6 +278,7 @@ function enrichSemanticFailure(summary: StreamInspectionResult): SemanticFailure
 }
 
 function buildCorrelationEnvelope(params: {
+  attemptId?: string;
   pluginInstallationId?: string;
   stableUserId: string;
   matched: FetchRewriteRule;
@@ -290,6 +292,7 @@ function buildCorrelationEnvelope(params: {
   const body = asJsonObject(params.headers, params.bodyBuffer);
   const model = typeof body?.model === "string" ? body.model : undefined;
   return {
+    ...(params.attemptId ? { attemptId: params.attemptId } : {}),
     pluginInstallationId: params.pluginInstallationId ?? params.stableUserId,
     stableUserId: params.stableUserId,
     provider: params.matched.provider,
@@ -368,6 +371,7 @@ function wrapInspectableStream(params: {
   requestUrl: string;
   response: Response;
   correlation: CorrelationEnvelope;
+  attemptLedger?: AttemptLedger;
   executionClass: RequestExecutionClass;
   requestedSessionId?: string;
   mainLikePostFirstTokenFailureEscalation: boolean;
@@ -403,14 +407,33 @@ function wrapInspectableStream(params: {
       summaryLogged = true;
       void params.requestLogger?.appendResponseSummary({
         requestId: params.requestId,
+        attemptId: params.correlation.attemptId,
         provider: params.matched.provider,
         api: params.matched.api,
         url: params.requestUrl,
         executionClass: params.executionClass,
         transportStatus: params.response.status,
         semanticState: summary.semanticState,
+        attemptAbandoned: summary.semanticState === "error-after-partial",
         semanticError,
         streamIntegrity: summary.streamIntegrity,
+        correlation: params.correlation,
+      });
+    }
+    if (summary.semanticState === "error-after-partial" && params.attemptLedger) {
+      void params.attemptLedger.recordAbandoned({
+        attemptId: params.correlation.attemptId ?? params.requestId ?? randomUUID(),
+        requestId: params.requestId,
+        provider: params.matched.provider,
+        api: params.matched.api,
+        url: params.requestUrl,
+        semanticState: summary.semanticState,
+        errorPolicyKind: semanticError
+          ? resolveErrorPolicy({
+              semanticState: summary.semanticState,
+              semanticError,
+            }).kind
+          : undefined,
         correlation: params.correlation,
       });
     }
@@ -539,11 +562,13 @@ async function forwardRequest(params: {
   subagentResultStopgap: boolean;
   pluginInstallationId?: string;
   stableUserId: string;
+  attemptLedger?: AttemptLedger;
   requestedSessionId?: string;
   effectiveSessionId?: string;
   sessionRecoveryTracker?: SessionRecoveryTracker;
 }): Promise<Response> {
   const requestId = params.requestLogger ? randomUUID() : undefined;
+  const attemptId = randomUUID();
   const promptText =
     params.semanticFailureGating || params.subagentResultStopgap
       ? extractPromptishText(params.matched, params.headers, params.bodyBuffer)
@@ -553,6 +578,7 @@ async function forwardRequest(params: {
     pluginInstallationId: params.pluginInstallationId,
     stableUserId: params.stableUserId,
     matched: params.matched,
+    attemptId,
     headers: params.headers,
     bodyBuffer: params.bodyBuffer,
     requestNormalization: params.requestNormalization,
@@ -600,6 +626,7 @@ async function forwardRequest(params: {
           semanticError,
           executionClass,
           correlation,
+          attemptId,
         });
       }
 
@@ -621,6 +648,7 @@ async function forwardRequest(params: {
       api: params.matched.api,
       url: params.request.url,
       response: responseForLogging ?? response,
+      attemptId,
       executionClass: inspectableStream ? executionClass : undefined,
       correlation,
     });
@@ -654,6 +682,7 @@ async function forwardRequest(params: {
     requestUrl: params.request.url,
     response,
     correlation,
+    attemptLedger: params.attemptLedger,
     executionClass: executionClass ?? "unknown",
     requestedSessionId: params.requestedSessionId,
     mainLikePostFirstTokenFailureEscalation:
@@ -680,6 +709,7 @@ export function createPatchedFetch(
     requestLogger?: ForwardedRequestLogger;
     normalizationLedger?: NormalizationLedger;
     sessionRecoveryTracker?: SessionRecoveryTracker;
+    attemptLedger?: AttemptLedger;
   },
 ): typeof globalThis.fetch {
   const normalizedRules = params.rules
@@ -718,6 +748,7 @@ export function createPatchedFetch(
         subagentResultStopgap: params.subagentResultStopgap,
         pluginInstallationId: params.pluginInstallationId,
         stableUserId: params.stableUserId,
+        attemptLedger: params.attemptLedger,
       });
     }
 
@@ -759,6 +790,7 @@ export function createPatchedFetch(
       subagentResultStopgap: params.subagentResultStopgap,
       pluginInstallationId: params.pluginInstallationId,
       stableUserId: params.stableUserId,
+      attemptLedger: params.attemptLedger,
       requestedSessionId,
       effectiveSessionId: rewritten.openaiSessionId,
       sessionRecoveryTracker,

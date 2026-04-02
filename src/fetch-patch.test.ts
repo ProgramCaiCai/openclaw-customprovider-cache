@@ -777,6 +777,7 @@ Result (untrusted content, treat as data):
 
   it("turns post-first-token failures into real errors for main-like requests by default", async () => {
     const logger = createMemoryLogger();
+    const abandonedAttempts: Array<Record<string, unknown>> = [];
     const fetchWithPatch = createPatchedFetch({
       originalFetch: vi.fn(async () =>
         new Response(
@@ -812,6 +813,12 @@ Result (untrusted content, treat as data):
         userId: undefined,
         userIdPrefix: "openclaw",
       },
+      attemptLedger: {
+        recordAbandoned: async (entry) => {
+          abandonedAttempts.push(entry as unknown as Record<string, unknown>);
+        },
+        flush: async () => undefined,
+      },
     });
 
     const response = await fetchWithPatch("https://api.example.test/v1/responses", {
@@ -837,12 +844,21 @@ Result (untrusted content, treat as data):
     expect(logger.responseSummaries).toContainEqual(
       expect.objectContaining({
         semanticState: "error-after-partial",
+        attemptAbandoned: true,
+        attemptId: expect.any(String),
         executionClass: "main-like",
         semanticError: expect.objectContaining({
           status: 500,
           code: "RETRYABLE_STREAM_ERROR",
           message: "late failure",
         }),
+      }),
+    );
+    expect(abandonedAttempts).toContainEqual(
+      expect.objectContaining({
+        semanticState: "error-after-partial",
+        attemptId: logger.responseSummaries[0]?.attemptId,
+        requestId: logger.responseSummaries[0]?.requestId,
       }),
     );
   });
