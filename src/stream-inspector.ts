@@ -1,4 +1,9 @@
-import type { ProviderApi, SemanticFailureInfo, StreamInspectionResult } from "./types.js";
+import type {
+  ProviderApi,
+  SemanticFailureInfo,
+  StreamInspectionResult,
+  StreamIntegrityTelemetry,
+} from "./types.js";
 
 type StreamTracker = {
   readonly sawVisibleOutput: boolean;
@@ -37,40 +42,83 @@ export async function inspectSseStream(params: {
 export function createStreamTracker(
   api: ProviderApi,
   onVisibleOutput?: () => void,
+  now: () => number = Date.now,
 ): StreamTracker {
   const decoder = new TextDecoder();
+  const startedAt = now();
   let buffer = "";
   let sawVisibleOutput = false;
   let terminalResult: StreamInspectionResult | undefined;
+  let firstChunkAtMs: number | undefined;
+  let firstVisibleOutputAtMs: number | undefined;
+  let terminalEventType: string | undefined;
+  let malformedEventCount = 0;
+  let ignoredJsonParseFailureCount = 0;
+  const malformedEventPreviews: string[] = [];
+
+  const currentOffset = (): number => now() - startedAt;
+
+  const buildStreamIntegrity = (): StreamIntegrityTelemetry => ({
+    ...(firstChunkAtMs !== undefined ? { firstChunkAtMs } : {}),
+    ...(firstVisibleOutputAtMs !== undefined ? { firstVisibleOutputAtMs } : {}),
+    ...(terminalEventType ? { terminalEventType } : {}),
+    malformedEventCount,
+    ignoredJsonParseFailureCount,
+    ...(malformedEventPreviews.length > 0 ? { malformedEventPreviews } : {}),
+    ...(terminalResult?.semanticState === "completed" && !sawVisibleOutput
+      ? { completedBeforeVisibleOutput: true }
+      : {}),
+  });
+
+  const updateTerminalResult = (
+    base: Omit<StreamInspectionResult, "streamIntegrity">,
+  ): StreamInspectionResult => ({
+    ...base,
+    streamIntegrity: buildStreamIntegrity(),
+  });
 
   const markVisibleOutput = (): void => {
     if (sawVisibleOutput) {
       return;
     }
     sawVisibleOutput = true;
+    firstVisibleOutputAtMs ??= currentOffset();
     onVisibleOutput?.();
     if (terminalResult?.semanticState === "error") {
-      terminalResult = {
+      terminalResult = updateTerminalResult({
         ...terminalResult,
         semanticState: "error-after-partial",
         sawVisibleOutput: true,
-      };
+      });
     }
   };
 
-  const setError = (semanticError: SemanticFailureInfo): void => {
-    terminalResult = {
+  const setError = (semanticError: SemanticFailureInfo, eventType?: string): void => {
+    terminalEventType ??= eventType;
+    terminalResult = updateTerminalResult({
       semanticState: sawVisibleOutput ? "error-after-partial" : "error",
       semanticError,
       sawVisibleOutput,
-    };
+    });
   };
 
-  const setCompleted = (): void => {
-    terminalResult = {
+  const setCompleted = (eventType?: string): void => {
+    terminalEventType ??= eventType;
+    terminalResult = updateTerminalResult({
       semanticState: "completed",
       sawVisibleOutput,
-    };
+    });
+  };
+
+  const recordMalformedBlock = (block: string, parseFailure = false): void => {
+    malformedEventCount += 1;
+    if (parseFailure) {
+      ignoredJsonParseFailureCount += 1;
+    }
+    if (malformedEventPreviews.length >= 3) {
+      return;
+    }
+    malformedEventPreviews.push(block.replace(/\s+/g, " ").trim().slice(0, 160));
   };
 
   const processPayload = (payload: unknown): void => {
@@ -132,6 +180,7 @@ export function createStreamTracker(
     try {
       processPayload(JSON.parse(dataText) as unknown);
     } catch {
+      recordMalformedBlock(dataText, true);
       return;
     }
   };
@@ -163,27 +212,35 @@ export function createStreamTracker(
       if (terminalResult?.semanticState === "completed") {
         return;
       }
+      firstChunkAtMs ??= currentOffset();
       buffer += decoder.decode(chunk, { stream: true });
       drainBuffer(false);
     },
     currentResult() {
-      return terminalResult;
+      return terminalResult
+        ? {
+            ...terminalResult,
+            streamIntegrity: buildStreamIntegrity(),
+          }
+        : undefined;
     },
     finalize() {
       buffer += decoder.decode();
       drainBuffer(true);
       return (
-        terminalResult ?? {
+        terminalResult ??
+        updateTerminalResult({
           semanticState: "ended-empty",
           semanticError: {
             message: "stream ended without a terminal success event",
           },
           sawVisibleOutput,
-        }
+        })
       );
     },
     abort(reason) {
-      return {
+      terminalEventType ??= "stream-aborted";
+      return updateTerminalResult({
         semanticState: "aborted",
         semanticError: {
           message:
@@ -194,7 +251,7 @@ export function createStreamTracker(
                 : "stream aborted before a terminal event",
         },
         sawVisibleOutput,
-      };
+      });
     },
   };
 }
@@ -202,8 +259,8 @@ export function createStreamTracker(
 function processOpenAiPayload(
   payload: Record<string, unknown>,
   markVisibleOutput: () => void,
-  setCompleted: () => void,
-  setError: (semanticError: SemanticFailureInfo) => void,
+  setCompleted: (eventType?: string) => void,
+  setError: (semanticError: SemanticFailureInfo, eventType?: string) => void,
 ): void {
   const type = typeof payload.type === "string" ? payload.type : undefined;
   if (!type) {
@@ -219,7 +276,7 @@ function processOpenAiPayload(
   }
 
   if (type === "response.completed") {
-    setCompleted();
+    setCompleted(type);
     return;
   }
 
@@ -232,15 +289,15 @@ function processOpenAiPayload(
       code: asString(error?.code ?? payload.code),
       message:
         asString(error?.message ?? payload.message) ?? "OpenAI stream reported a terminal failure",
-    });
+    }, type);
   }
 }
 
 function processAnthropicPayload(
   payload: Record<string, unknown>,
   markVisibleOutput: () => void,
-  setCompleted: () => void,
-  setError: (semanticError: SemanticFailureInfo) => void,
+  setCompleted: (eventType?: string) => void,
+  setError: (semanticError: SemanticFailureInfo, eventType?: string) => void,
 ): void {
   const type = typeof payload.type === "string" ? payload.type : undefined;
   if (!type) {
@@ -255,7 +312,7 @@ function processAnthropicPayload(
   }
 
   if (type === "message_stop") {
-    setCompleted();
+    setCompleted(type);
     return;
   }
 
@@ -266,7 +323,7 @@ function processAnthropicPayload(
       providerStatus: asNumber(error?.status ?? payload.status),
       code: asString(error?.type ?? payload.code),
       message: asString(error?.message ?? payload.message) ?? "Anthropic stream reported a terminal failure",
-    });
+    }, type);
   }
 }
 
@@ -274,8 +331,8 @@ function processGooglePayload(
   payload: Record<string, unknown>,
   sawVisibleOutput: boolean,
   markVisibleOutput: () => void,
-  setCompleted: () => void,
-  setError: (semanticError: SemanticFailureInfo) => void,
+  setCompleted: (eventType?: string) => void,
+  setError: (semanticError: SemanticFailureInfo, eventType?: string) => void,
 ): void {
   const error = asRecord(payload.error);
   if (error) {
@@ -285,7 +342,7 @@ function processGooglePayload(
       code: asString(error.status ?? payload.code),
       message:
         asString(error.message ?? payload.message) ?? "Google stream reported a terminal failure",
-    });
+    }, "google.error");
     return;
   }
 
@@ -303,7 +360,11 @@ function processGooglePayload(
     (candidate) => hasNonEmptyText(candidate.finishReason) && (hasVisibleOutput || sawVisibleOutput),
   );
   if (reachedTerminalSuccess) {
-    setCompleted();
+    const finishReason = candidates.find((candidate) => hasNonEmptyText(candidate.finishReason))
+      ?.finishReason;
+    setCompleted(
+      typeof finishReason === "string" ? `google.finishReason.${finishReason}` : "google.finishReason",
+    );
   }
 }
 

@@ -128,10 +128,21 @@ export type SemanticFailureInfo = {
   syntheticFailure?: boolean;
 };
 
+export type StreamIntegrityTelemetry = {
+  firstChunkAtMs?: number;
+  firstVisibleOutputAtMs?: number;
+  terminalEventType?: string;
+  malformedEventCount: number;
+  ignoredJsonParseFailureCount: number;
+  malformedEventPreviews?: string[];
+  completedBeforeVisibleOutput?: boolean;
+};
+
 export type StreamInspectionResult = {
   semanticState: Exclude<SemanticState, "unknown-stream">;
   semanticError?: SemanticFailureInfo;
   sawVisibleOutput: boolean;
+  streamIntegrity?: StreamIntegrityTelemetry;
 };
 
 export type ForwardedRequestLogRecord = {
@@ -201,6 +212,7 @@ export type ForwardedResponseSummaryLogRecord = {
   providerStatus?: number;
   providerTerminalKind?: ProviderTerminalKind;
   normalizedErrorKind?: NormalizedProviderErrorKind;
+  streamIntegrity?: StreamIntegrityTelemetry;
 };
 
 export type ForwardedRequestLogger = {
@@ -233,6 +245,7 @@ export type ForwardedRequestLogger = {
     semanticError?: SemanticFailureInfo;
     executionClass?: RequestExecutionClass;
     transportStatus?: number;
+    streamIntegrity?: StreamIntegrityTelemetry;
   }) => Promise<void>;
   flush: () => Promise<void>;
 };

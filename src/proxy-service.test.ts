@@ -511,6 +511,10 @@ describe("SessionMetadataProxyService", () => {
     const summaryRecord = JSON.parse(summaryLine ?? "null") as {
       event: string;
       semanticState: string;
+      streamIntegrity?: {
+        terminalEventType?: string;
+        firstChunkAtMs?: number;
+      };
     };
 
     expect(responseRecord.status).toBe(200);
@@ -520,6 +524,10 @@ describe("SessionMetadataProxyService", () => {
     expect(responseRecord.body).toBeUndefined();
     expect(summaryRecord.event).toBe("response-summary");
     expect(summaryRecord.semanticState).toBe("completed");
+    expect(summaryRecord.streamIntegrity).toMatchObject({
+      terminalEventType: "response.completed",
+    });
+    expect(summaryRecord.streamIntegrity?.firstChunkAtMs).toBeTypeOf("number");
   });
 
   it("logs upstream stream overloads with normalized provider error categories", async () => {
@@ -608,11 +616,17 @@ describe("SessionMetadataProxyService", () => {
       semanticState: string;
       providerStatus?: number;
       normalizedErrorKind?: string;
+      streamIntegrity?: {
+        terminalEventType?: string;
+      };
     };
 
     expect(summaryRecord.semanticState).toBe("error");
     expect(summaryRecord.providerStatus).toBe(529);
     expect(summaryRecord.normalizedErrorKind).toBe("upstream-overloaded");
+    expect(summaryRecord.streamIntegrity).toMatchObject({
+      terminalEventType: "response.failed",
+    });
   });
 
   it("passes covered streams through untouched when semantic failure gating is disabled", async () => {

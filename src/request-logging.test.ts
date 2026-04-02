@@ -119,6 +119,45 @@ describe("createForwardedRequestLogger", () => {
     expect(line.body).toBeUndefined();
   });
 
+  it("falls back to unavailable bodies when the response was already consumed", async () => {
+    const stateDir = await createStateDir(tempDirs);
+    const warnings: string[] = [];
+    const logger = createForwardedRequestLogger({
+      config: { enabled: true },
+      stateDir,
+      logger: {
+        info: () => {},
+        warn: (message) => warnings.push(message),
+        error: () => {},
+      },
+    });
+
+    const response = new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+    await response.text();
+
+    await logger?.appendResponse({
+      requestId: "req-consumed",
+      provider: "openai",
+      api: "openai-responses",
+      url: "https://example.test/v1/responses",
+      response,
+    });
+    await logger?.flush();
+
+    const [line] = await readLines(stateDir);
+    expect(line).toMatchObject({
+      event: "response",
+      requestId: "req-consumed",
+      bodyState: "unavailable",
+      truncated: false,
+    });
+    expect(line.body).toBeUndefined();
+    expect(warnings).toHaveLength(0);
+  });
+
   it("normalizes auth transport failures while preserving raw provider payloads", async () => {
     const stateDir = await createStateDir(tempDirs);
     const logger = createForwardedRequestLogger({
@@ -187,6 +226,14 @@ describe("createForwardedRequestLogger", () => {
         message: "quota exhausted upstream",
         providerStatus: 529,
       },
+      streamIntegrity: {
+        firstChunkAtMs: 12,
+        firstVisibleOutputAtMs: 34,
+        terminalEventType: "response.failed",
+        malformedEventCount: 1,
+        ignoredJsonParseFailureCount: 1,
+        malformedEventPreviews: ['{"type":"response.failed"'],
+      },
     });
     await logger?.appendResponseSummary({
       requestId: "req-invalid-stream",
@@ -219,6 +266,14 @@ describe("createForwardedRequestLogger", () => {
         code: "RATE_LIMIT",
         message: "quota exhausted upstream",
         providerStatus: 529,
+      },
+      streamIntegrity: {
+        firstChunkAtMs: 12,
+        firstVisibleOutputAtMs: 34,
+        terminalEventType: "response.failed",
+        malformedEventCount: 1,
+        ignoredJsonParseFailureCount: 1,
+        malformedEventPreviews: ['{"type":"response.failed"'],
       },
     });
     expect(invalidStreamLine).toMatchObject({

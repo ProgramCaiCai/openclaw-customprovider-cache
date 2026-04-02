@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { inspectSseStream } from "./stream-inspector.js";
+import { createStreamTracker, inspectSseStream } from "./stream-inspector.js";
 
 describe("inspectSseStream", () => {
   it("marks openai responses streams as completed when they emit response.completed", async () => {
@@ -127,6 +127,49 @@ describe("inspectSseStream", () => {
         code: "RESOURCE_EXHAUSTED",
         message: "quota exhausted",
         providerStatus: 429,
+      },
+    });
+  });
+
+  it("records stream milestones for first chunk, visible output, and completion", () => {
+    const encoder = new TextEncoder();
+    let now = 1_000;
+    const tracker = createStreamTracker("openai-responses", undefined, () => now);
+
+    tracker.consumeChunk(encoder.encode('data: {"type":"response.created"}\n\n'));
+    now = 1_020;
+    tracker.consumeChunk(encoder.encode('data: {"type":"response.output_text.delta","delta":"hello"}\n\n'));
+    now = 1_045;
+    tracker.consumeChunk(encoder.encode('data: {"type":"response.completed"}\n\n'));
+
+    expect(tracker.finalize()).toMatchObject({
+      semanticState: "completed",
+      sawVisibleOutput: true,
+      streamIntegrity: {
+        firstChunkAtMs: 0,
+        firstVisibleOutputAtMs: 20,
+        terminalEventType: "response.completed",
+        malformedEventCount: 0,
+        ignoredJsonParseFailureCount: 0,
+      },
+    });
+  });
+
+  it("counts malformed SSE event blocks and keeps bounded previews", () => {
+    const encoder = new TextEncoder();
+    const tracker = createStreamTracker("openai-responses");
+
+    tracker.consumeChunk(encoder.encode('data: {"type":"response.created"}\n\n'));
+    tracker.consumeChunk(
+      encoder.encode('data: {"type":"response.output_text.delta","delta":"hello"\n\n'),
+    );
+
+    expect(tracker.finalize()).toMatchObject({
+      semanticState: "ended-empty",
+      streamIntegrity: {
+        malformedEventCount: 1,
+        ignoredJsonParseFailureCount: 1,
+        malformedEventPreviews: ['{"type":"response.output_text.delta","delta":"hello"'],
       },
     });
   });

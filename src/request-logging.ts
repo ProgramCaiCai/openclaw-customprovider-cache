@@ -308,6 +308,7 @@ function createResponseSummaryLogRecord(input: {
   semanticError?: SemanticFailureInfo;
   executionClass?: RequestExecutionClass;
   transportStatus?: number;
+  streamIntegrity?: ForwardedResponseSummaryLogRecord["streamIntegrity"];
 }): ForwardedResponseSummaryLogRecord {
   const providerStatus = resolveProviderStatus({
     status: input.transportStatus,
@@ -332,6 +333,9 @@ function createResponseSummaryLogRecord(input: {
       semanticState: input.semanticState,
       semanticError: input.semanticError,
     }),
+    streamIntegrity: input.streamIntegrity
+      ? sanitizeValue(input.streamIntegrity) as ForwardedResponseSummaryLogRecord["streamIntegrity"]
+      : undefined,
   };
 }
 
@@ -365,7 +369,16 @@ async function captureResponseBody(response: Response): Promise<{
     };
   }
 
-  const cloned = response.clone();
+  let cloned: Response;
+  try {
+    cloned = response.clone();
+  } catch {
+    return {
+      body: undefined,
+      bodyState: "unavailable",
+      truncated: false,
+    };
+  }
   const reader = cloned.body?.getReader();
   if (!reader) {
     return {

@@ -392,6 +392,7 @@ function wrapInspectableStream(params: {
         transportStatus: params.response.status,
         semanticState: summary.semanticState,
         semanticError,
+        streamIntegrity: summary.streamIntegrity,
       });
     }
     if (
