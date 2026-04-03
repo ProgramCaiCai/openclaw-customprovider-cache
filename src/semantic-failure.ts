@@ -7,6 +7,8 @@ const INVALID_REQUEST_PATTERN = /invalid[_ -]?prompt|invalid request|limited acc
 const OVERLOADED_PATTERN = /server_is_overloaded|slow_down|overload|capacity|temporarily unavailable|service_unavailable|busy/i;
 const RATE_LIMIT_PATTERN = /rate[_ -]?limit|too many requests|resource exhausted|throttl/i;
 
+const PARTIAL_STREAM_PATTERN = /after visible output.*terminal success event|visible output.*terminal success event/i;
+
 function resolveBaseMessage(summary: StreamInspectionResult): string {
   return (
     summary.semanticError?.message ??
@@ -14,7 +16,9 @@ function resolveBaseMessage(summary: StreamInspectionResult): string {
       ? "stream ended without a terminal success event"
       : summary.semanticState === "aborted"
         ? "stream aborted before a terminal success event"
-        : "upstream stream reported a terminal failure")
+        : summary.semanticState === "error-after-partial"
+          ? "stream ended after visible output without a terminal success event"
+          : "upstream stream reported a terminal failure")
   );
 }
 
@@ -45,13 +49,25 @@ export function classifySemanticFailure(summary: StreamInspectionResult): Semant
   const providerStatus = resolveProviderStatus(summary);
   const fingerprint = buildFingerprint(summary, message);
 
-  if (summary.semanticState === "ended-empty" || summary.semanticState === "aborted") {
+  if (summary.semanticState === "ended-empty") {
+    return {
+      status: 408,
+      code: "STREAM_ENDED_EMPTY",
+      message,
+      providerStatus,
+      classification: "retryable-stream-empty",
+      retryable: true,
+      retryAfterMs: undefined,
+    };
+  }
+
+  if (summary.semanticState === "aborted") {
     return {
       status: 408,
       code: "STREAM_ABORTED",
       message,
       providerStatus,
-      classification: "retryable-stream",
+      classification: "retryable-stream-aborted",
       retryable: true,
       retryAfterMs: undefined,
     };
@@ -120,6 +136,18 @@ export function classifySemanticFailure(summary: StreamInspectionResult): Semant
       message,
       providerStatus,
       classification: "retryable-stream",
+      retryable: true,
+      retryAfterMs,
+    };
+  }
+
+  if (summary.semanticState === "error-after-partial" && PARTIAL_STREAM_PATTERN.test(message)) {
+    return {
+      status: providerStatus ?? summary.semanticError?.status ?? 502,
+      code: "STREAM_TRUNCATED_AFTER_VISIBLE_OUTPUT",
+      message,
+      providerStatus,
+      classification: "retryable-stream-partial",
       retryable: true,
       retryAfterMs,
     };

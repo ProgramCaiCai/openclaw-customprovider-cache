@@ -37,7 +37,7 @@ describe("inspectSseStream", () => {
     });
   });
 
-  it("marks streams without a terminal success as ended-empty", async () => {
+  it("marks streams without visible output or a terminal success as ended-empty", async () => {
     const result = await inspectSseStream({
       api: "openai-responses",
       stream: streamFromText('data: {"type":"response.created"}\n\n'),
@@ -46,6 +46,30 @@ describe("inspectSseStream", () => {
     expect(result).toMatchObject({
       semanticState: "ended-empty",
       sawVisibleOutput: false,
+      semanticError: {
+        message: "stream ended without a terminal success event",
+      },
+      streamIntegrity: {
+        terminalEventType: "stream-ended-empty",
+      },
+    });
+  });
+
+  it("marks visible-output streams without a terminal success as partial failures", async () => {
+    const result = await inspectSseStream({
+      api: "openai-responses",
+      stream: streamFromText('data: {"type":"response.output_text.delta","delta":"hello"}\n\n'),
+    });
+
+    expect(result).toMatchObject({
+      semanticState: "error-after-partial",
+      sawVisibleOutput: true,
+      semanticError: {
+        message: "stream ended after visible output without a terminal success event",
+      },
+      streamIntegrity: {
+        terminalEventType: "stream-ended-after-visible-output",
+      },
     });
   });
 
@@ -131,7 +155,40 @@ describe("inspectSseStream", () => {
     });
   });
 
-  it("records stream milestones for first chunk, visible output, and completion", () => {
+  it("marks visible-output aborts as partial failures", async () => {
+    const encoder = new TextEncoder();
+    let emitted = false;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (!emitted) {
+          emitted = true;
+          controller.enqueue(
+            encoder.encode('data: {"type":"response.output_text.delta","delta":"hello"}\n\n'),
+          );
+          return;
+        }
+        controller.error(new Error("socket closed"));
+      },
+    });
+
+    const result = await inspectSseStream({
+      api: "openai-responses",
+      stream,
+    });
+
+    expect(result).toMatchObject({
+      semanticState: "error-after-partial",
+      sawVisibleOutput: true,
+      semanticError: {
+        message: "stream aborted after visible output before a terminal success event: socket closed",
+      },
+      streamIntegrity: {
+        terminalEventType: "stream-aborted-after-visible-output",
+      },
+    });
+  });
+
+  it("records stream milestones for first chunk, visible output, completion, and end", () => {
     const encoder = new TextEncoder();
     let now = 1_000;
     const tracker = createStreamTracker("openai-responses", undefined, () => now);
@@ -141,6 +198,7 @@ describe("inspectSseStream", () => {
     tracker.consumeChunk(encoder.encode('data: {"type":"response.output_text.delta","delta":"hello"}\n\n'));
     now = 1_045;
     tracker.consumeChunk(encoder.encode('data: {"type":"response.completed"}\n\n'));
+    now = 1_050;
 
     expect(tracker.finalize()).toMatchObject({
       semanticState: "completed",
@@ -148,6 +206,7 @@ describe("inspectSseStream", () => {
       streamIntegrity: {
         firstChunkAtMs: 0,
         firstVisibleOutputAtMs: 20,
+        streamEndedAtMs: 50,
         terminalEventType: "response.completed",
         malformedEventCount: 0,
         ignoredJsonParseFailureCount: 0,

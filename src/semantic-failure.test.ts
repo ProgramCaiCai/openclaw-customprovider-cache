@@ -46,4 +46,51 @@ describe("classifySemanticFailure", () => {
       retryAfterMs: 11054,
     });
   });
+
+  it("distinguishes empty-ended streams from aborted streams", () => {
+    const endedEmpty: StreamInspectionResult = {
+      semanticState: "ended-empty",
+      sawVisibleOutput: false,
+      semanticError: {
+        message: "stream ended without a terminal success event",
+      },
+    };
+    const aborted: StreamInspectionResult = {
+      semanticState: "aborted",
+      sawVisibleOutput: false,
+      semanticError: {
+        message: "stream aborted before a terminal success event",
+      },
+    };
+
+    expect(classifySemanticFailure(endedEmpty)).toMatchObject({
+      status: 408,
+      code: "STREAM_ENDED_EMPTY",
+      classification: "retryable-stream-empty",
+      retryable: true,
+    });
+    expect(classifySemanticFailure(aborted)).toMatchObject({
+      status: 408,
+      code: "STREAM_ABORTED",
+      classification: "retryable-stream-aborted",
+      retryable: true,
+    });
+  });
+
+  it("distinguishes partial visible-output truncation from generic retryable stream errors", () => {
+    const summary: StreamInspectionResult = {
+      semanticState: "error-after-partial",
+      sawVisibleOutput: true,
+      semanticError: {
+        message: "stream ended after visible output without a terminal success event",
+      },
+    };
+
+    expect(classifySemanticFailure(summary)).toMatchObject({
+      status: 502,
+      code: "STREAM_TRUNCATED_AFTER_VISIBLE_OUTPUT",
+      classification: "retryable-stream-partial",
+      retryable: true,
+    });
+  });
 });

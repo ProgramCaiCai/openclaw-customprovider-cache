@@ -222,6 +222,7 @@ function createResponseSummaryLogRecord(input: {
   api: ForwardedResponseSummaryLogRecord["api"];
   url: string;
   semanticState: ForwardedResponseSummaryLogRecord["semanticState"];
+  sawVisibleOutput: boolean;
   attemptAbandoned?: boolean;
   semanticError?: SemanticFailureInfo;
   executionClass?: RequestExecutionClass;
@@ -245,6 +246,7 @@ function createResponseSummaryLogRecord(input: {
     api: input.api,
     url: input.url,
     semanticState: input.semanticState,
+    sawVisibleOutput: input.sawVisibleOutput,
     semanticError: input.semanticError ? sanitizeValue(input.semanticError) as SemanticFailureInfo : undefined,
     executionClass: input.executionClass,
     transportStatus: input.transportStatus,

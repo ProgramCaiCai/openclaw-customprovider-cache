@@ -537,6 +537,7 @@ describe("SessionMetadataProxyService", () => {
     const summaryRecord = JSON.parse(summaryLine ?? "null") as {
       event: string;
       semanticState: string;
+      sawVisibleOutput?: boolean;
       streamIntegrity?: {
         terminalEventType?: string;
         firstChunkAtMs?: number;
@@ -550,6 +551,7 @@ describe("SessionMetadataProxyService", () => {
     expect(responseRecord.body).toBeUndefined();
     expect(summaryRecord.event).toBe("response-summary");
     expect(summaryRecord.semanticState).toBe("completed");
+    expect(summaryRecord.sawVisibleOutput).toBe(true);
     expect(summaryRecord.streamIntegrity).toMatchObject({
       terminalEventType: "response.completed",
     });
@@ -640,6 +642,7 @@ describe("SessionMetadataProxyService", () => {
       .split("\n");
     const summaryRecord = JSON.parse(summaryLine ?? "null") as {
       semanticState: string;
+      sawVisibleOutput?: boolean;
       providerStatus?: number;
       normalizedErrorKind?: string;
       errorPolicyKind?: string;
@@ -649,6 +652,7 @@ describe("SessionMetadataProxyService", () => {
     };
 
     expect(summaryRecord.semanticState).toBe("error");
+    expect(summaryRecord.sawVisibleOutput).toBe(false);
     expect(summaryRecord.providerStatus).toBe(529);
     expect(summaryRecord.normalizedErrorKind).toBe("upstream-overloaded");
     expect(summaryRecord.errorPolicyKind).toBe("overload-error");

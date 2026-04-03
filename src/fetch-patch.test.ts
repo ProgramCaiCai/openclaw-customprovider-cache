@@ -995,6 +995,135 @@ Result (untrusted content, treat as data):
     );
   });
 
+  it("propagates partial visible-output EOF telemetry into response summaries", async () => {
+    const logger = createMemoryLogger();
+    const fetchWithPatch = createPatchedFetch({
+      originalFetch: vi.fn(async () =>
+        new Response(
+          streamFromText('data: {"type":"response.output_text.delta","delta":"hello"}\n\n'),
+          {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          },
+        ),
+      ),
+      rules: [
+        {
+          provider: "openai",
+          api: "openai-responses",
+          baseUrl: "https://api.example.test/v1",
+        },
+      ],
+      stableUserId: "openclaw-user",
+      fallbackSessionId: "session-stable",
+      requestLogger: logger,
+      semanticFailureGating: true,
+      subagentResultStopgap: true,
+      openai: {
+        injectPromptCacheKey: true,
+        injectSessionIdHeader: true,
+        scrubAssistantCommentaryReplay: true,
+      },
+      anthropic: {
+        injectMetadataUserId: true,
+        userId: undefined,
+        userIdPrefix: "openclaw",
+      },
+    });
+
+    const response = await fetchWithPatch("https://api.example.test/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.2",
+        input: [{ role: "user", content: "AGENTS.md TOOLS.md" }],
+      }),
+    });
+
+    await expect(response.text()).rejects.toMatchObject({
+      status: 502,
+      code: "STREAM_TRUNCATED_AFTER_VISIBLE_OUTPUT",
+      message: "stream ended after visible output without a terminal success event",
+    });
+    expect(logger.responseSummaries).toContainEqual(
+      expect.objectContaining({
+        semanticState: "error-after-partial",
+        sawVisibleOutput: true,
+        streamIntegrity: expect.objectContaining({
+          terminalEventType: "stream-ended-after-visible-output",
+          firstVisibleOutputAtMs: expect.any(Number),
+          streamEndedAtMs: expect.any(Number),
+        }),
+        semanticError: expect.objectContaining({
+          code: "STREAM_TRUNCATED_AFTER_VISIBLE_OUTPUT",
+        }),
+      }),
+    );
+  });
+
+  it("propagates empty-ended stream telemetry into response summaries", async () => {
+    const logger = createMemoryLogger();
+    const fetchWithPatch = createPatchedFetch({
+      originalFetch: vi.fn(async () =>
+        new Response(streamFromText('data: {"type":"response.created"}\n\n'), {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        }),
+      ),
+      rules: [
+        {
+          provider: "openai",
+          api: "openai-responses",
+          baseUrl: "https://api.example.test/v1",
+        },
+      ],
+      stableUserId: "openclaw-user",
+      fallbackSessionId: "session-stable",
+      requestLogger: logger,
+      semanticFailureGating: true,
+      subagentResultStopgap: true,
+      openai: {
+        injectPromptCacheKey: true,
+        injectSessionIdHeader: true,
+        scrubAssistantCommentaryReplay: true,
+      },
+      anthropic: {
+        injectMetadataUserId: true,
+        userId: undefined,
+        userIdPrefix: "openclaw",
+      },
+    });
+
+    const response = await fetchWithPatch("https://api.example.test/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.2",
+        input: [{ role: "user", content: "AGENTS.md TOOLS.md" }],
+      }),
+    });
+
+    await expect(response.text()).rejects.toMatchObject({
+      status: 408,
+      code: "STREAM_ENDED_EMPTY",
+      message: "stream ended without a terminal success event",
+    });
+    expect(logger.responseSummaries).toContainEqual(
+      expect.objectContaining({
+        semanticState: "ended-empty",
+        sawVisibleOutput: false,
+        streamIntegrity: expect.objectContaining({
+          terminalEventType: "stream-ended-empty",
+          firstChunkAtMs: expect.any(Number),
+          streamEndedAtMs: expect.any(Number),
+        }),
+        semanticError: expect.objectContaining({
+          code: "STREAM_ENDED_EMPTY",
+        }),
+      }),
+    );
+  });
+
   it("turns google stream terminal failures into real stream errors", async () => {
     const logger = createMemoryLogger();
     const fetchWithPatch = createPatchedFetch({

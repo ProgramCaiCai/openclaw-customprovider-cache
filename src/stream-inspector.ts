@@ -51,6 +51,7 @@ export function createStreamTracker(
   let terminalResult: StreamInspectionResult | undefined;
   let firstChunkAtMs: number | undefined;
   let firstVisibleOutputAtMs: number | undefined;
+  let streamEndedAtMs: number | undefined;
   let terminalEventType: string | undefined;
   let malformedEventCount = 0;
   let ignoredJsonParseFailureCount = 0;
@@ -61,6 +62,7 @@ export function createStreamTracker(
   const buildStreamIntegrity = (): StreamIntegrityTelemetry => ({
     ...(firstChunkAtMs !== undefined ? { firstChunkAtMs } : {}),
     ...(firstVisibleOutputAtMs !== undefined ? { firstVisibleOutputAtMs } : {}),
+    ...(streamEndedAtMs !== undefined ? { streamEndedAtMs } : {}),
     ...(terminalEventType ? { terminalEventType } : {}),
     malformedEventCount,
     ignoredJsonParseFailureCount,
@@ -76,6 +78,19 @@ export function createStreamTracker(
     ...base,
     streamIntegrity: buildStreamIntegrity(),
   });
+
+  const buildAbortMessage = (reason: unknown): string => {
+    const baseMessage = sawVisibleOutput
+      ? "stream aborted after visible output before a terminal success event"
+      : "stream aborted before a terminal success event";
+    if (reason instanceof Error && reason.message) {
+      return `${baseMessage}: ${reason.message}`;
+    }
+    if (typeof reason === "string" && reason.length > 0) {
+      return `${baseMessage}: ${reason}`;
+    }
+    return baseMessage;
+  };
 
   const markVisibleOutput = (): void => {
     if (sawVisibleOutput) {
@@ -227,28 +242,35 @@ export function createStreamTracker(
     finalize() {
       buffer += decoder.decode();
       drainBuffer(true);
-      return (
-        terminalResult ??
-        updateTerminalResult({
-          semanticState: "ended-empty",
-          semanticError: {
-            message: "stream ended without a terminal success event",
-          },
-          sawVisibleOutput,
-        })
-      );
+      streamEndedAtMs ??= currentOffset();
+      if (terminalResult) {
+        return {
+          ...terminalResult,
+          streamIntegrity: buildStreamIntegrity(),
+        };
+      }
+      terminalEventType ??= sawVisibleOutput
+        ? "stream-ended-after-visible-output"
+        : "stream-ended-empty";
+      return updateTerminalResult({
+        semanticState: sawVisibleOutput ? "error-after-partial" : "ended-empty",
+        semanticError: {
+          message: sawVisibleOutput
+            ? "stream ended after visible output without a terminal success event"
+            : "stream ended without a terminal success event",
+        },
+        sawVisibleOutput,
+      });
     },
     abort(reason) {
-      terminalEventType ??= "stream-aborted";
+      streamEndedAtMs ??= currentOffset();
+      terminalEventType ??= sawVisibleOutput
+        ? "stream-aborted-after-visible-output"
+        : "stream-aborted";
       return updateTerminalResult({
-        semanticState: "aborted",
+        semanticState: sawVisibleOutput ? "error-after-partial" : "aborted",
         semanticError: {
-          message:
-            reason instanceof Error
-              ? reason.message
-              : typeof reason === "string"
-                ? reason
-                : "stream aborted before a terminal event",
+          message: buildAbortMessage(reason),
         },
         sawVisibleOutput,
       });

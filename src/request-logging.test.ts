@@ -257,6 +257,7 @@ describe("createForwardedRequestLogger", () => {
       url: "https://example.test/v1/responses",
       transportStatus: 200,
       semanticState: "error",
+      sawVisibleOutput: true,
       attemptAbandoned: true,
       executionClass: "subagent-like",
       semanticError: {
@@ -268,6 +269,7 @@ describe("createForwardedRequestLogger", () => {
       streamIntegrity: {
         firstChunkAtMs: 12,
         firstVisibleOutputAtMs: 34,
+        streamEndedAtMs: 56,
         terminalEventType: "response.failed",
         malformedEventCount: 1,
         ignoredJsonParseFailureCount: 1,
@@ -281,10 +283,11 @@ describe("createForwardedRequestLogger", () => {
       url: "https://example.test/v1/responses",
       transportStatus: 200,
       semanticState: "ended-empty",
+      sawVisibleOutput: false,
       executionClass: "subagent-like",
       semanticError: {
         status: 408,
-        code: "STREAM_ABORTED",
+        code: "STREAM_ENDED_EMPTY",
         message: "stream ended without a terminal success event",
       },
     });
@@ -297,6 +300,7 @@ describe("createForwardedRequestLogger", () => {
       attemptId: "attempt-1",
       attemptAbandoned: true,
       semanticState: "error",
+      sawVisibleOutput: true,
       providerTerminalKind: "semantic-error",
       executionClass: "subagent-like",
       transportStatus: 200,
@@ -312,6 +316,7 @@ describe("createForwardedRequestLogger", () => {
       streamIntegrity: {
         firstChunkAtMs: 12,
         firstVisibleOutputAtMs: 34,
+        streamEndedAtMs: 56,
         terminalEventType: "response.failed",
         malformedEventCount: 1,
         ignoredJsonParseFailureCount: 1,
@@ -322,12 +327,13 @@ describe("createForwardedRequestLogger", () => {
       event: "response-summary",
       requestId: "req-invalid-stream",
       semanticState: "ended-empty",
+      sawVisibleOutput: false,
       providerTerminalKind: "ended-empty",
       normalizedErrorKind: "invalid-stream",
       errorPolicyKind: "invalid-stream-error",
       semanticError: {
         status: 408,
-        code: "STREAM_ABORTED",
+        code: "STREAM_ENDED_EMPTY",
         message: "stream ended without a terminal success event",
       },
     });
@@ -348,6 +354,7 @@ describe("createForwardedRequestLogger", () => {
       url: "https://example.test/v1/messages",
       transportStatus: 200,
       semanticState: "completed",
+      sawVisibleOutput: true,
       executionClass: "main-like",
     });
     await logger?.flush();
@@ -357,6 +364,7 @@ describe("createForwardedRequestLogger", () => {
       event: "response-summary",
       requestId: "req-completed",
       semanticState: "completed",
+      sawVisibleOutput: true,
       providerTerminalKind: "completed",
       executionClass: "main-like",
       transportStatus: 200,

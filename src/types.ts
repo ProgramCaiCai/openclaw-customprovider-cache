@@ -55,7 +55,10 @@ export type SemanticFailureClassification =
   | "usage-not-included"
   | "invalid-request"
   | "server-overloaded"
-  | "retryable-stream";
+  | "retryable-stream"
+  | "retryable-stream-empty"
+  | "retryable-stream-aborted"
+  | "retryable-stream-partial";
 
 export type NormalizedPluginConfig = {
   providers: string[];
@@ -158,6 +161,7 @@ export type SemanticFailureInfo = {
 export type StreamIntegrityTelemetry = {
   firstChunkAtMs?: number;
   firstVisibleOutputAtMs?: number;
+  streamEndedAtMs?: number;
   terminalEventType?: string;
   malformedEventCount: number;
   ignoredJsonParseFailureCount: number;
@@ -239,6 +243,7 @@ export type ForwardedResponseSummaryLogRecord = {
   api: ProviderApi;
   url: string;
   semanticState: Exclude<SemanticState, "unknown-stream">;
+  sawVisibleOutput: boolean;
   semanticError?: SemanticFailureInfo;
   executionClass?: RequestExecutionClass;
   transportStatus?: number;
@@ -281,6 +286,7 @@ export type ForwardedRequestLogger = {
     api: ProviderApi;
     url: string;
     semanticState: Exclude<SemanticState, "unknown-stream">;
+    sawVisibleOutput: boolean;
     attemptAbandoned?: boolean;
     semanticError?: SemanticFailureInfo;
     executionClass?: RequestExecutionClass;

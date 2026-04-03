@@ -414,6 +414,7 @@ function wrapInspectableStream(params: {
         executionClass: params.executionClass,
         transportStatus: params.response.status,
         semanticState: summary.semanticState,
+        sawVisibleOutput: summary.sawVisibleOutput,
         attemptAbandoned: summary.semanticState === "error-after-partial",
         semanticError,
         streamIntegrity: summary.streamIntegrity,
