@@ -17,8 +17,10 @@ import type {
   ForwardedRequestLogger,
   ForwardedRequestLogRecord,
   NormalizedPluginConfig,
+  PostFirstTokenFailurePolicy,
   RequestExecutionClass,
   SemanticFailureInfo,
+  SemanticRetryConfig,
   StreamInspectionResult,
   SubagentResultStopgapReason,
   SubagentResultStopgapVerdict,
@@ -251,30 +253,55 @@ function isInspectableStream(rule: FetchRewriteRule, response: Response): boolea
   );
 }
 
-function shouldEscalateSemanticFailure(
-  summary: StreamInspectionResult,
+function resolveDefaultSemanticRetryConfig(
+  mainLikePostFirstTokenFailureEscalation = true,
+): SemanticRetryConfig {
+  return {
+    maxAttempts: 3,
+    baseBackoffMs: 200,
+    mainLikePostFirstTokenPolicy: mainLikePostFirstTokenFailureEscalation
+      ? "raise"
+      : "passthrough",
+    subagentLikePostFirstTokenPolicy: "buffered-retry",
+  };
+}
+
+function resolvePostFirstTokenFailurePolicy(
   executionClass: RequestExecutionClass,
-  mainLikePostFirstTokenFailureEscalation: boolean,
-): boolean {
-  if (summary.semanticState === "completed") {
-    return false;
+  semanticRetry: SemanticRetryConfig,
+): PostFirstTokenFailurePolicy {
+  if (executionClass === "subagent-like") {
+    return semanticRetry.subagentLikePostFirstTokenPolicy;
   }
-
-  if (summary.semanticState === "error-after-partial") {
-    if (executionClass === "subagent-like") {
-      return true;
-    }
-    if (executionClass === "main-like") {
-      return mainLikePostFirstTokenFailureEscalation;
-    }
-    return false;
+  if (executionClass === "main-like") {
+    return semanticRetry.mainLikePostFirstTokenPolicy;
   }
-
-  return true;
+  return "passthrough";
 }
 
 function enrichSemanticFailure(summary: StreamInspectionResult): SemanticFailureInfo {
   return classifySemanticFailure(summary);
+}
+
+function shouldRetrySemanticFailure(
+  summary: StreamInspectionResult,
+  semanticError: SemanticFailureInfo,
+): boolean {
+  return resolveErrorPolicy({
+    semanticState: summary.semanticState,
+    semanticError,
+  }).retryable;
+}
+
+function computeRetryDelayMs(
+  semanticError: SemanticFailureInfo,
+  semanticRetry: SemanticRetryConfig,
+  attemptNumber: number,
+): number {
+  if (semanticError.retryAfterMs !== undefined) {
+    return semanticError.retryAfterMs;
+  }
+  return semanticRetry.baseBackoffMs * 2 ** Math.max(0, attemptNumber - 1);
 }
 
 function buildCorrelationEnvelope(params: {
@@ -365,7 +392,11 @@ function createSubagentResultStopgapResponse(params: {
 }
 
 function wrapInspectableStream(params: {
+  originalFetch: typeof globalThis.fetch;
+  request: Request;
   matched: FetchRewriteRule;
+  headers: Headers;
+  bodyBuffer: Buffer;
   requestId?: string;
   requestLogger?: ForwardedRequestLogger;
   requestUrl: string;
@@ -374,7 +405,7 @@ function wrapInspectableStream(params: {
   attemptLedger?: AttemptLedger;
   executionClass: RequestExecutionClass;
   requestedSessionId?: string;
-  mainLikePostFirstTokenFailureEscalation: boolean;
+  semanticRetry: SemanticRetryConfig;
   effectiveSessionId?: string;
   sessionRecoveryTracker?: SessionRecoveryTracker;
 }): Response {
@@ -383,28 +414,16 @@ function wrapInspectableStream(params: {
     return params.response;
   }
 
-  const tracker = createStreamTracker(params.matched.api);
-  const reader = sourceBody.getReader();
-  const bufferedChunks: Uint8Array[] = [];
-  let flushedVisibleOutput = false;
   let finalized = false;
-  let summaryLogged = false;
+  let cancelled = false;
+  let activeReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 
-  const flushBufferedChunks = (controller: ReadableStreamDefaultController<Uint8Array>): void => {
-    if (flushedVisibleOutput) {
-      return;
-    }
-    for (const chunk of bufferedChunks) {
-      controller.enqueue(chunk);
-    }
-    bufferedChunks.length = 0;
-    flushedVisibleOutput = true;
-  };
-
-  const appendSummary = (summary: StreamInspectionResult): SemanticFailureInfo | undefined => {
+  const appendSummary = (
+    summary: StreamInspectionResult,
+    transportStatus: number,
+  ): SemanticFailureInfo | undefined => {
     const semanticError = summary.semanticState === "completed" ? undefined : enrichSemanticFailure(summary);
-    if (!summaryLogged && params.requestId) {
-      summaryLogged = true;
+    if (params.requestId) {
       void params.requestLogger?.appendResponseSummary({
         requestId: params.requestId,
         attemptId: params.correlation.attemptId,
@@ -412,7 +431,7 @@ function wrapInspectableStream(params: {
         api: params.matched.api,
         url: params.requestUrl,
         executionClass: params.executionClass,
-        transportStatus: params.response.status,
+        transportStatus,
         semanticState: summary.semanticState,
         sawVisibleOutput: summary.sawVisibleOutput,
         attemptAbandoned: summary.semanticState === "error-after-partial",
@@ -463,83 +482,217 @@ function wrapInspectableStream(params: {
   };
 
   const wrappedBody = new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      if (finalized) {
-        return;
-      }
+    start(controller) {
+      const postFirstTokenPolicy = resolvePostFirstTokenFailurePolicy(
+        params.executionClass,
+        params.semanticRetry,
+      );
 
-      try {
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) {
-            const summary = tracker.finalize();
-            const semanticError = appendSummary(summary);
-            finalized = true;
-            if (
-              shouldEscalateSemanticFailure(
-                summary,
-                params.executionClass,
-                params.mainLikePostFirstTokenFailureEscalation,
-              )
-            ) {
-              controller.error(createSemanticStreamError(semanticError ?? enrichSemanticFailure(summary)));
-              return;
-            }
-            if (!flushedVisibleOutput) {
-              flushBufferedChunks(controller);
-            }
-            controller.close();
-            return;
-          }
-
-          if (!value || value.byteLength === 0) {
-            continue;
-          }
-
-          tracker.consumeChunk(value);
-          const currentSummary = tracker.currentResult();
-
-          if (
-            currentSummary &&
-            shouldEscalateSemanticFailure(
-              currentSummary,
-              params.executionClass,
-              params.mainLikePostFirstTokenFailureEscalation,
-            )
-          ) {
-            const semanticError = appendSummary(currentSummary) ?? enrichSemanticFailure(currentSummary);
-            finalized = true;
-            controller.error(createSemanticStreamError(semanticError));
-            await reader.cancel().catch(() => undefined);
-            return;
-          }
-
-          if (!flushedVisibleOutput) {
-            bufferedChunks.push(value);
-            if (tracker.sawVisibleOutput) {
-              flushBufferedChunks(controller);
-              return;
-            }
-            continue;
-          }
-
-          controller.enqueue(value);
+      const flushBufferedChunks = (
+        bufferedChunks: Uint8Array[],
+        state: { flushedVisibleOutput: boolean },
+      ): void => {
+        if (state.flushedVisibleOutput) {
           return;
         }
-      } catch (error) {
-        const summary = tracker.abort(error);
-        const semanticError = appendSummary(summary) ?? enrichSemanticFailure(summary);
+        for (const chunk of bufferedChunks) {
+          controller.enqueue(chunk);
+        }
+        bufferedChunks.length = 0;
+        state.flushedVisibleOutput = true;
+      };
+
+      const run = async (): Promise<void> => {
+        let attemptNumber = 1;
+        let nextResponse: Response = params.response;
+
+        while (!cancelled && attemptNumber <= params.semanticRetry.maxAttempts) {
+          const attemptResponse = nextResponse;
+          nextResponse = undefined as unknown as Response;
+          const attemptBody = attemptResponse.body;
+          if (!attemptBody) {
+            finalized = true;
+            controller.error(new Error("Inspectable stream response body is missing"));
+            return;
+          }
+
+          const tracker = createStreamTracker(params.matched.api);
+          const reader = attemptBody.getReader();
+          activeReader = reader;
+          const bufferedChunks: Uint8Array[] = [];
+          const outputState = { flushedVisibleOutput: false };
+
+          const requestRetry = async (semanticError: SemanticFailureInfo): Promise<void> => {
+            await reader.cancel().catch(() => undefined);
+            activeReader = undefined;
+            const delayMs = computeRetryDelayMs(
+              semanticError,
+              params.semanticRetry,
+              attemptNumber,
+            );
+            if (delayMs > 0) {
+              await new Promise((resolve) => setTimeout(resolve, delayMs));
+            }
+            attemptNumber += 1;
+            if (attemptNumber > params.semanticRetry.maxAttempts || cancelled) {
+              finalized = true;
+              controller.error(createSemanticStreamError(semanticError));
+              return;
+            }
+            nextResponse = await params.originalFetch(
+              params.request.url,
+              buildForwardInit(params.request, params.headers, params.bodyBuffer),
+            );
+          };
+
+          try {
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) {
+                const summary = tracker.finalize();
+                const semanticError = appendSummary(summary, attemptResponse.status);
+
+                if (summary.semanticState === "completed") {
+                  if (!outputState.flushedVisibleOutput) {
+                    flushBufferedChunks(bufferedChunks, outputState);
+                  }
+                  finalized = true;
+                  controller.close();
+                  return;
+                }
+
+                const resolvedSemanticError = semanticError ?? enrichSemanticFailure(summary);
+                const retryable = shouldRetrySemanticFailure(summary, resolvedSemanticError);
+                const canRetry =
+                  retryable &&
+                  attemptNumber < params.semanticRetry.maxAttempts &&
+                  (!summary.sawVisibleOutput || postFirstTokenPolicy === "buffered-retry");
+
+                if (canRetry) {
+                  await requestRetry(resolvedSemanticError);
+                  break;
+                }
+
+                if (summary.sawVisibleOutput && postFirstTokenPolicy === "passthrough") {
+                  if (!outputState.flushedVisibleOutput) {
+                    flushBufferedChunks(bufferedChunks, outputState);
+                  }
+                  finalized = true;
+                  controller.close();
+                  return;
+                }
+
+                finalized = true;
+                controller.error(createSemanticStreamError(resolvedSemanticError));
+                return;
+              }
+
+              if (!value || value.byteLength === 0) {
+                continue;
+              }
+
+              tracker.consumeChunk(value);
+              const currentSummary = tracker.currentResult();
+
+              if (!outputState.flushedVisibleOutput) {
+                bufferedChunks.push(value);
+                if (
+                  tracker.sawVisibleOutput &&
+                  postFirstTokenPolicy !== "buffered-retry"
+                ) {
+                  flushBufferedChunks(bufferedChunks, outputState);
+                }
+              } else if (
+                !currentSummary ||
+                currentSummary.semanticState === "completed" ||
+                postFirstTokenPolicy === "passthrough"
+              ) {
+                controller.enqueue(value);
+              }
+
+              if (!currentSummary) {
+                continue;
+              }
+
+              if (currentSummary.semanticState === "completed") {
+                appendSummary(currentSummary, attemptResponse.status);
+                if (!outputState.flushedVisibleOutput) {
+                  flushBufferedChunks(bufferedChunks, outputState);
+                }
+                finalized = true;
+                controller.close();
+                await reader.cancel().catch(() => undefined);
+                activeReader = undefined;
+                return;
+              }
+
+              const semanticError =
+                appendSummary(currentSummary, attemptResponse.status) ??
+                enrichSemanticFailure(currentSummary);
+              const retryable = shouldRetrySemanticFailure(currentSummary, semanticError);
+              const canRetry =
+                retryable &&
+                attemptNumber < params.semanticRetry.maxAttempts &&
+                (!currentSummary.sawVisibleOutput ||
+                  postFirstTokenPolicy === "buffered-retry");
+
+              if (canRetry) {
+                await requestRetry(semanticError);
+                break;
+              }
+
+              if (currentSummary.sawVisibleOutput && postFirstTokenPolicy === "passthrough") {
+                continue;
+              }
+
+              finalized = true;
+              controller.error(createSemanticStreamError(semanticError));
+              await reader.cancel().catch(() => undefined);
+              activeReader = undefined;
+              return;
+            }
+          } catch (error) {
+            const summary = tracker.abort(error);
+            const semanticError = appendSummary(summary, attemptResponse.status) ?? enrichSemanticFailure(summary);
+            const retryable = shouldRetrySemanticFailure(summary, semanticError);
+            const canRetry =
+              retryable &&
+              attemptNumber < params.semanticRetry.maxAttempts &&
+              (!summary.sawVisibleOutput || postFirstTokenPolicy === "buffered-retry");
+
+            if (canRetry) {
+              await requestRetry(semanticError);
+              continue;
+            }
+
+            finalized = true;
+            controller.error(createSemanticStreamError(semanticError));
+            return;
+          } finally {
+            activeReader = undefined;
+          }
+
+          if (!nextResponse) {
+            return;
+          }
+        }
+      };
+
+      void run().catch((error) => {
+        if (finalized || cancelled) {
+          return;
+        }
         finalized = true;
-        controller.error(createSemanticStreamError(semanticError));
-      }
+        controller.error(error instanceof Error ? error : new Error(String(error)));
+      });
     },
     async cancel(reason) {
       if (finalized) {
         return;
       }
       finalized = true;
-      appendSummary(tracker.abort(reason));
-      await reader.cancel(reason).catch(() => undefined);
+      cancelled = true;
+      await activeReader?.cancel(reason).catch(() => undefined);
     },
   });
 
@@ -559,6 +712,7 @@ async function forwardRequest(params: {
   bodyBuffer: Buffer;
   requestNormalization?: ForwardedRequestLogRecord["requestNormalization"];
   semanticFailureGating: boolean;
+  semanticRetry: SemanticRetryConfig;
   mainLikePostFirstTokenFailureEscalation?: boolean;
   subagentResultStopgap: boolean;
   pluginInstallationId?: string;
@@ -678,6 +832,10 @@ async function forwardRequest(params: {
 
   return wrapInspectableStream({
     matched: params.matched,
+    originalFetch: params.originalFetch,
+    request: params.request,
+    headers: params.headers,
+    bodyBuffer: params.bodyBuffer,
     requestId,
     requestLogger: params.requestLogger,
     requestUrl: params.request.url,
@@ -686,21 +844,26 @@ async function forwardRequest(params: {
     attemptLedger: params.attemptLedger,
     executionClass: executionClass ?? "unknown",
     requestedSessionId: params.requestedSessionId,
-    mainLikePostFirstTokenFailureEscalation:
-      params.mainLikePostFirstTokenFailureEscalation ?? true,
+    semanticRetry:
+      params.semanticRetry ??
+      resolveDefaultSemanticRetryConfig(params.mainLikePostFirstTokenFailureEscalation ?? true),
     effectiveSessionId: params.effectiveSessionId,
     sessionRecoveryTracker: params.sessionRecoveryTracker,
   });
 }
 
 export function createPatchedFetch(
-  params: Pick<
-    NormalizedPluginConfig,
-    | "openai"
-    | "anthropic"
-    | "semanticFailureGating"
-    | "mainLikePostFirstTokenFailureEscalation"
-    | "subagentResultStopgap"
+  params: Omit<
+    Pick<
+      NormalizedPluginConfig,
+      | "openai"
+      | "anthropic"
+      | "semanticFailureGating"
+      | "semanticRetry"
+      | "mainLikePostFirstTokenFailureEscalation"
+      | "subagentResultStopgap"
+    >,
+    "semanticRetry"
   > & {
     originalFetch: typeof globalThis.fetch;
     pluginInstallationId?: string;
@@ -711,6 +874,7 @@ export function createPatchedFetch(
     normalizationLedger?: NormalizationLedger;
     sessionRecoveryTracker?: SessionRecoveryTracker;
     attemptLedger?: AttemptLedger;
+    semanticRetry?: SemanticRetryConfig;
   },
 ): typeof globalThis.fetch {
   const normalizedRules = params.rules
@@ -744,6 +908,9 @@ export function createPatchedFetch(
         headers,
         bodyBuffer: rawBody,
         semanticFailureGating: params.semanticFailureGating,
+        semanticRetry:
+          params.semanticRetry ??
+          resolveDefaultSemanticRetryConfig(params.mainLikePostFirstTokenFailureEscalation ?? true),
         mainLikePostFirstTokenFailureEscalation:
           params.mainLikePostFirstTokenFailureEscalation,
         subagentResultStopgap: params.subagentResultStopgap,
@@ -786,6 +953,9 @@ export function createPatchedFetch(
       bodyBuffer: rewritten.bodyBuffer,
       requestNormalization: rewritten.requestNormalization,
       semanticFailureGating: params.semanticFailureGating,
+      semanticRetry:
+        params.semanticRetry ??
+        resolveDefaultSemanticRetryConfig(params.mainLikePostFirstTokenFailureEscalation ?? true),
       mainLikePostFirstTokenFailureEscalation:
         params.mainLikePostFirstTokenFailureEscalation,
       subagentResultStopgap: params.subagentResultStopgap,

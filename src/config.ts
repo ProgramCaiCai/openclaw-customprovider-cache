@@ -1,4 +1,7 @@
-import type { NormalizedPluginConfig } from "./types.js";
+import type {
+  NormalizedPluginConfig,
+  PostFirstTokenFailurePolicy,
+} from "./types.js";
 
 function asRecord(value: unknown, field: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -13,6 +16,28 @@ function readBoolean(value: unknown, field: string, fallback: boolean): boolean 
     throw new Error(`${field} must be a boolean`);
   }
   return value;
+}
+
+function readInteger(value: unknown, field: string, fallback: number, minimum: number): number {
+  if (value === undefined) return fallback;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < minimum) {
+    throw new Error(`${field} must be an integer >= ${minimum}`);
+  }
+  return value;
+}
+
+function readPostFirstTokenFailurePolicy(
+  value: unknown,
+  field: string,
+  fallback: PostFirstTokenFailurePolicy,
+): PostFirstTokenFailurePolicy {
+  if (value === undefined) return fallback;
+  if (value === "passthrough" || value === "raise" || value === "buffered-retry") {
+    return value;
+  }
+  throw new Error(
+    `${field} must be one of: passthrough, raise, buffered-retry`,
+  );
 }
 
 function readOptionalString(value: unknown, field: string): string | undefined {
@@ -43,6 +68,14 @@ export function normalizePluginConfig(raw: unknown): NormalizedPluginConfig {
   const openaiRaw = value.openai === undefined ? {} : asRecord(value.openai, "openai");
   const anthropicRaw =
     value.anthropic === undefined ? {} : asRecord(value.anthropic, "anthropic");
+  const semanticRetryRaw =
+    value.semanticRetry === undefined ? {} : asRecord(value.semanticRetry, "semanticRetry");
+  const mainLikePostFirstTokenFailureEscalation = readBoolean(
+    value.mainLikePostFirstTokenFailureEscalation,
+    "mainLikePostFirstTokenFailureEscalation",
+    true,
+  );
+  const mainLikeLegacyFallback = mainLikePostFirstTokenFailureEscalation ? "raise" : "passthrough";
 
   return {
     providers: [...new Set(readStringArray(value.providers, "providers"))],
@@ -51,11 +84,31 @@ export function normalizePluginConfig(raw: unknown): NormalizedPluginConfig {
       "semanticFailureGating",
       true,
     ),
-    mainLikePostFirstTokenFailureEscalation: readBoolean(
-      value.mainLikePostFirstTokenFailureEscalation,
-      "mainLikePostFirstTokenFailureEscalation",
-      true,
-    ),
+    mainLikePostFirstTokenFailureEscalation,
+    semanticRetry: {
+      maxAttempts: readInteger(
+        semanticRetryRaw.maxAttempts,
+        "semanticRetry.maxAttempts",
+        3,
+        1,
+      ),
+      baseBackoffMs: readInteger(
+        semanticRetryRaw.baseBackoffMs,
+        "semanticRetry.baseBackoffMs",
+        200,
+        0,
+      ),
+      mainLikePostFirstTokenPolicy: readPostFirstTokenFailurePolicy(
+        semanticRetryRaw.mainLikePostFirstTokenPolicy,
+        "semanticRetry.mainLikePostFirstTokenPolicy",
+        mainLikeLegacyFallback,
+      ),
+      subagentLikePostFirstTokenPolicy: readPostFirstTokenFailurePolicy(
+        semanticRetryRaw.subagentLikePostFirstTokenPolicy,
+        "semanticRetry.subagentLikePostFirstTokenPolicy",
+        "buffered-retry",
+      ),
+    },
     subagentResultStopgap: readBoolean(
       value.subagentResultStopgap,
       "subagentResultStopgap",

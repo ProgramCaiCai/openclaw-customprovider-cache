@@ -5,9 +5,46 @@ import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SessionMetadataProxyService } from "./proxy-service.js";
+import type { NormalizedPluginConfig } from "./types.js";
 
 async function readJson(response: Response): Promise<unknown> {
   return JSON.parse(await response.text());
+}
+
+function createPluginConfig(
+  overrides: Partial<NormalizedPluginConfig> = {},
+): NormalizedPluginConfig {
+  return {
+    providers: [],
+    semanticFailureGating: true,
+    mainLikePostFirstTokenFailureEscalation: true,
+    semanticRetry: {
+      maxAttempts: 3,
+      baseBackoffMs: 200,
+      mainLikePostFirstTokenPolicy: "raise",
+      subagentLikePostFirstTokenPolicy: "buffered-retry",
+      ...overrides.semanticRetry,
+    },
+    subagentResultStopgap: true,
+    requestLogging: {
+      enabled: false,
+      path: undefined,
+      ...overrides.requestLogging,
+    },
+    openai: {
+      injectPromptCacheKey: true,
+      injectSessionIdHeader: true,
+      scrubAssistantCommentaryReplay: true,
+      ...overrides.openai,
+    },
+    anthropic: {
+      injectMetadataUserId: true,
+      userId: undefined,
+      userIdPrefix: "openclaw",
+      ...overrides.anthropic,
+    },
+    ...overrides,
+  };
 }
 
 describe("SessionMetadataProxyService", () => {
@@ -41,25 +78,7 @@ describe("SessionMetadataProxyService", () => {
     };
     const service = new SessionMetadataProxyService({
       config: cfg,
-      pluginConfig: {
-        providers: [],
-        semanticFailureGating: true,
-        subagentResultStopgap: true,
-        requestLogging: {
-          enabled: false,
-          path: undefined,
-        },
-        openai: {
-          injectPromptCacheKey: true,
-          injectSessionIdHeader: true,
-          scrubAssistantCommentaryReplay: true,
-        },
-        anthropic: {
-          injectMetadataUserId: true,
-          userId: undefined,
-          userIdPrefix: "openclaw",
-        },
-      },
+      pluginConfig: createPluginConfig(),
       stateDir: "/tmp",
       logger: { info: () => {}, warn: () => {}, error: () => {} },
     });
@@ -89,25 +108,13 @@ describe("SessionMetadataProxyService", () => {
     };
     const service = new SessionMetadataProxyService({
       config: cfg,
-      pluginConfig: {
-        providers: [],
-        semanticFailureGating: true,
-        subagentResultStopgap: true,
-        requestLogging: {
-          enabled: false,
-          path: undefined,
-        },
-        openai: {
-          injectPromptCacheKey: true,
-          injectSessionIdHeader: true,
-          scrubAssistantCommentaryReplay: true,
-        },
+      pluginConfig: createPluginConfig({
         anthropic: {
           injectMetadataUserId: true,
           userId: "tenant-user",
           userIdPrefix: "openclaw",
         },
-      },
+      }),
       stateDir: "/tmp",
       logger: { info: () => {}, warn: () => {}, error: () => {} },
     });
@@ -150,25 +157,7 @@ describe("SessionMetadataProxyService", () => {
     };
     const service = new SessionMetadataProxyService({
       config: cfg,
-      pluginConfig: {
-        providers: [],
-        semanticFailureGating: true,
-        subagentResultStopgap: true,
-        requestLogging: {
-          enabled: false,
-          path: undefined,
-        },
-        openai: {
-          injectPromptCacheKey: true,
-          injectSessionIdHeader: true,
-          scrubAssistantCommentaryReplay: true,
-        },
-        anthropic: {
-          injectMetadataUserId: true,
-          userId: undefined,
-          userIdPrefix: "openclaw",
-        },
-      },
+      pluginConfig: createPluginConfig(),
       stateDir,
       logger: { info: () => {}, warn: () => {}, error: () => {} },
     });
@@ -212,25 +201,12 @@ describe("SessionMetadataProxyService", () => {
     };
     const service = new SessionMetadataProxyService({
       config: cfg,
-      pluginConfig: {
-        providers: [],
-        semanticFailureGating: true,
-        subagentResultStopgap: true,
+      pluginConfig: createPluginConfig({
         requestLogging: {
           enabled: true,
           path: undefined,
         },
-        openai: {
-          injectPromptCacheKey: true,
-          injectSessionIdHeader: true,
-          scrubAssistantCommentaryReplay: true,
-        },
-        anthropic: {
-          injectMetadataUserId: true,
-          userId: undefined,
-          userIdPrefix: "openclaw",
-        },
-      },
+      }),
       stateDir,
       logger: { info: () => {}, warn: () => {}, error: () => {} },
     });
@@ -357,25 +333,12 @@ describe("SessionMetadataProxyService", () => {
     };
     const service = new SessionMetadataProxyService({
       config: cfg,
-      pluginConfig: {
-        providers: [],
-        semanticFailureGating: true,
-        subagentResultStopgap: true,
+      pluginConfig: createPluginConfig({
         requestLogging: {
           enabled: true,
           path: undefined,
         },
-        openai: {
-          injectPromptCacheKey: true,
-          injectSessionIdHeader: true,
-          scrubAssistantCommentaryReplay: true,
-        },
-        anthropic: {
-          injectMetadataUserId: true,
-          userId: undefined,
-          userIdPrefix: "openclaw",
-        },
-      },
+      }),
       stateDir,
       logger: { info: () => {}, warn: () => {}, error: () => {} },
     });
@@ -476,25 +439,12 @@ describe("SessionMetadataProxyService", () => {
     });
     const service = new SessionMetadataProxyService({
       config: cfg,
-      pluginConfig: {
-        providers: [],
-        semanticFailureGating: true,
-        subagentResultStopgap: true,
+      pluginConfig: createPluginConfig({
         requestLogging: {
           enabled: true,
           path: undefined,
         },
-        openai: {
-          injectPromptCacheKey: true,
-          injectSessionIdHeader: true,
-          scrubAssistantCommentaryReplay: true,
-        },
-        anthropic: {
-          injectMetadataUserId: true,
-          userId: undefined,
-          userIdPrefix: "openclaw",
-        },
-      },
+      }),
       stateDir,
       logger: { info: () => {}, warn: () => {}, error: () => {} },
     });
@@ -590,25 +540,12 @@ describe("SessionMetadataProxyService", () => {
     });
     const service = new SessionMetadataProxyService({
       config: cfg,
-      pluginConfig: {
-        providers: [],
-        semanticFailureGating: true,
-        subagentResultStopgap: true,
+      pluginConfig: createPluginConfig({
         requestLogging: {
           enabled: true,
           path: undefined,
         },
-        openai: {
-          injectPromptCacheKey: true,
-          injectSessionIdHeader: true,
-          scrubAssistantCommentaryReplay: true,
-        },
-        anthropic: {
-          injectMetadataUserId: true,
-          userId: undefined,
-          userIdPrefix: "openclaw",
-        },
-      },
+      }),
       stateDir,
       logger: { info: () => {}, warn: () => {}, error: () => {} },
     });
@@ -693,25 +630,13 @@ describe("SessionMetadataProxyService", () => {
     });
     const service = new SessionMetadataProxyService({
       config: cfg,
-      pluginConfig: {
-        providers: [],
+      pluginConfig: createPluginConfig({
         semanticFailureGating: false,
-        subagentResultStopgap: true,
         requestLogging: {
           enabled: true,
           path: undefined,
         },
-        openai: {
-          injectPromptCacheKey: true,
-          injectSessionIdHeader: true,
-          scrubAssistantCommentaryReplay: true,
-        },
-        anthropic: {
-          injectMetadataUserId: true,
-          userId: undefined,
-          userIdPrefix: "openclaw",
-        },
-      },
+      }),
       stateDir,
       logger: { info: () => {}, warn: () => {}, error: () => {} },
     });
@@ -806,25 +731,7 @@ describe("SessionMetadataProxyService", () => {
         },
       },
     };
-    const pluginConfig = {
-      providers: [],
-      semanticFailureGating: true,
-      subagentResultStopgap: true,
-      requestLogging: {
-        enabled: false,
-        path: undefined,
-      },
-      openai: {
-        injectPromptCacheKey: true,
-        injectSessionIdHeader: true,
-        scrubAssistantCommentaryReplay: true,
-      },
-      anthropic: {
-        injectMetadataUserId: true,
-        userId: undefined,
-        userIdPrefix: "openclaw",
-      },
-    };
+    const pluginConfig = createPluginConfig();
 
     const firstService = new SessionMetadataProxyService({
       config: cfg,
@@ -903,25 +810,7 @@ describe("SessionMetadataProxyService", () => {
     };
     const service = new SessionMetadataProxyService({
       config: cfg,
-      pluginConfig: {
-        providers: [],
-        semanticFailureGating: true,
-        subagentResultStopgap: true,
-        requestLogging: {
-          enabled: false,
-          path: undefined,
-        },
-        openai: {
-          injectPromptCacheKey: true,
-          injectSessionIdHeader: true,
-          scrubAssistantCommentaryReplay: true,
-        },
-        anthropic: {
-          injectMetadataUserId: true,
-          userId: undefined,
-          userIdPrefix: "openclaw",
-        },
-      },
+      pluginConfig: createPluginConfig(),
       stateDir: "/tmp",
       logger: { info: () => {}, warn: () => {}, error: () => {} },
     });

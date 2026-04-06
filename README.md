@@ -79,6 +79,12 @@ The plugin works with defaults. Configure it under `plugins.entries.openclaw-cus
   "providers": ["custom-openai", "custom-anthropic"],
   "semanticFailureGating": true,
   "mainLikePostFirstTokenFailureEscalation": true,
+  "semanticRetry": {
+    "maxAttempts": 3,
+    "baseBackoffMs": 200,
+    "mainLikePostFirstTokenPolicy": "raise",
+    "subagentLikePostFirstTokenPolicy": "buffered-retry"
+  },
   "subagentResultStopgap": true,
   "requestLogging": {
     "enabled": false
@@ -99,7 +105,15 @@ Notes:
 
 - `providers`: empty means all configured providers with supported APIs
 - `semanticFailureGating`: defaults to `true`; set `false` to disable semantic stream inspection and let covered streams pass through untouched
-- `mainLikePostFirstTokenFailureEscalation`: defaults to `true`; set `false` to keep main-like post-first-token semantic failures readable in-stream instead of raising a real stream error
+- `mainLikePostFirstTokenFailureEscalation`: legacy compatibility switch. `true` maps to `semanticRetry.mainLikePostFirstTokenPolicy="raise"` and `false` maps to `"passthrough"`
+- `semanticRetry.maxAttempts`: defaults to `3`; total same-provider attempts for retryable semantic failures, including the first attempt
+- `semanticRetry.baseBackoffMs`: defaults to `200`; exponential backoff base used when the semantic failure does not provide `retryAfterMs`
+- `semanticRetry.mainLikePostFirstTokenPolicy`: defaults to `raise`; controls main-like post-first-token semantic failures
+- `semanticRetry.subagentLikePostFirstTokenPolicy`: defaults to `buffered-retry`; controls subagent-like post-first-token semantic failures
+- Post-first-token policies:
+  - `passthrough`: keep readable partial output and do not raise a real stream error
+  - `raise`: raise a real stream error after partial output
+  - `buffered-retry`: buffer the attempt, retry same-provider on retryable semantic failure, and only flush a successful attempt
 - `subagentResultStopgap`: defaults to `true`; set `false` to disable the bounded request-side child-result short-circuit
 - `requestLogging.enabled`: when `true`, append sanitized JSONL request and response events for each forwarded plugin-handled request to `stateDir/forwarded-requests.jsonl`
 - `requestLogging.path`: optional custom log file path; relative paths resolve from the plugin `stateDir`
@@ -157,11 +171,12 @@ The execution class is a v1 heuristic based on prompt/bootstrap payloads:
 
 That heuristic matters because the policy is intentionally split:
 
-- Pre-first-token semantic failures are upgraded to real stream errors for all covered streams
-- Post-first-token semantic failures are upgraded to real stream errors for `subagent-like` requests and, by default, for `main-like` requests too
-- Set `mainLikePostFirstTokenFailureEscalation=false` if you explicitly want to preserve main-like partial output despite the semantic failure
+- Pre-first-token retryable semantic failures are retried against the same configured provider before the plugin raises a real error
+- Same-provider retries still call the same gateway URL, so account rotation remains gateway-managed
+- Post-first-token semantic failures follow `semanticRetry.*PostFirstTokenPolicy`
+- By default, `main-like` uses `raise` and `subagent-like` uses `buffered-retry`
 - Stream terminal failures are normalized into Codex-like categories (`CONTEXT_WINDOW_EXCEEDED`, `QUOTA_EXCEEDED`, `USAGE_NOT_INCLUDED`, `INVALID_REQUEST`, `SERVER_OVERLOADED`, or `RETRYABLE_STREAM_ERROR`)
-- With the default config, main-like partial failures also raise real stream errors after the first visible token; disable `mainLikePostFirstTokenFailureEscalation` to keep the old readable-but-non-fatal behavior
+- Legacy `mainLikePostFirstTokenFailureEscalation=false` still keeps the old readable-but-non-fatal main-like behavior
 
 ## Current scope
 

@@ -8,6 +8,12 @@ describe("normalizePluginConfig", () => {
       providers: [],
       semanticFailureGating: true,
       mainLikePostFirstTokenFailureEscalation: true,
+      semanticRetry: {
+        maxAttempts: 3,
+        baseBackoffMs: 200,
+        mainLikePostFirstTokenPolicy: "raise",
+        subagentLikePostFirstTokenPolicy: "buffered-retry",
+      },
       subagentResultStopgap: true,
       requestLogging: {
         enabled: false,
@@ -87,6 +93,9 @@ describe("normalizePluginConfig", () => {
       }),
     ).toMatchObject({
       mainLikePostFirstTokenFailureEscalation: false,
+      semanticRetry: {
+        mainLikePostFirstTokenPolicy: "passthrough",
+      },
     });
   });
 
@@ -98,5 +107,68 @@ describe("normalizePluginConfig", () => {
     ).toMatchObject({
       subagentResultStopgap: false,
     });
+  });
+
+  it("normalizes semantic retry policies explicitly", () => {
+    expect(
+      normalizePluginConfig({
+        semanticRetry: {
+          maxAttempts: 5,
+          baseBackoffMs: 350,
+          mainLikePostFirstTokenPolicy: "buffered-retry",
+          subagentLikePostFirstTokenPolicy: "passthrough",
+        },
+      }),
+    ).toMatchObject({
+      semanticRetry: {
+        maxAttempts: 5,
+        baseBackoffMs: 350,
+        mainLikePostFirstTokenPolicy: "buffered-retry",
+        subagentLikePostFirstTokenPolicy: "passthrough",
+      },
+    });
+  });
+
+  it("prefers explicit semantic retry policy over legacy main-like boolean fallback", () => {
+    expect(
+      normalizePluginConfig({
+        mainLikePostFirstTokenFailureEscalation: false,
+        semanticRetry: {
+          mainLikePostFirstTokenPolicy: "raise",
+        },
+      }),
+    ).toMatchObject({
+      mainLikePostFirstTokenFailureEscalation: false,
+      semanticRetry: {
+        mainLikePostFirstTokenPolicy: "raise",
+      },
+    });
+  });
+
+  it("rejects invalid semantic retry policy values", () => {
+    expect(() =>
+      normalizePluginConfig({
+        semanticRetry: {
+          mainLikePostFirstTokenPolicy: "retry",
+        },
+      }),
+    ).toThrow("semanticRetry.mainLikePostFirstTokenPolicy");
+  });
+
+  it("rejects invalid semantic retry numeric values", () => {
+    expect(() =>
+      normalizePluginConfig({
+        semanticRetry: {
+          maxAttempts: 0,
+        },
+      }),
+    ).toThrow("semanticRetry.maxAttempts");
+    expect(() =>
+      normalizePluginConfig({
+        semanticRetry: {
+          baseBackoffMs: -1,
+        },
+      }),
+    ).toThrow("semanticRetry.baseBackoffMs");
   });
 });

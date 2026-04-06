@@ -33,6 +33,15 @@ export type RequestLoggingConfig = {
   path?: string;
 };
 
+export type PostFirstTokenFailurePolicy = "passthrough" | "raise" | "buffered-retry";
+
+export type SemanticRetryConfig = {
+  maxAttempts: number;
+  baseBackoffMs: number;
+  mainLikePostFirstTokenPolicy: PostFirstTokenFailurePolicy;
+  subagentLikePostFirstTokenPolicy: PostFirstTokenFailurePolicy;
+};
+
 export type SubagentResultStopgapVerdict =
   | "none"
   | "poisoned-child-result"
@@ -64,6 +73,7 @@ export type NormalizedPluginConfig = {
   providers: string[];
   semanticFailureGating: boolean;
   mainLikePostFirstTokenFailureEscalation?: boolean;
+  semanticRetry: SemanticRetryConfig;
   subagentResultStopgap: boolean;
   requestLogging: RequestLoggingConfig;
   openai: {
