@@ -7,7 +7,6 @@ describe("normalizePluginConfig", () => {
     expect(normalizePluginConfig(undefined)).toEqual({
       providers: [],
       semanticFailureGating: true,
-      mainLikePostFirstTokenFailureEscalation: true,
       semanticRetry: {
         maxAttempts: 3,
         baseBackoffMs: 200,
@@ -86,17 +85,23 @@ describe("normalizePluginConfig", () => {
     ).toThrow("openai.scrubAssistantCommentaryReplay");
   });
 
-  it("allows disabling main-like post-first-token escalation explicitly", () => {
+  it("maps the legacy main-like boolean to semantic retry policy and warns", () => {
+    const warnings: string[] = [];
+
     expect(
       normalizePluginConfig({
         mainLikePostFirstTokenFailureEscalation: false,
+      }, {
+        warn: (message) => warnings.push(message),
       }),
     ).toMatchObject({
-      mainLikePostFirstTokenFailureEscalation: false,
       semanticRetry: {
         mainLikePostFirstTokenPolicy: "passthrough",
       },
     });
+    expect(warnings).toEqual([
+      expect.stringContaining("mainLikePostFirstTokenFailureEscalation"),
+    ]);
   });
 
   it("allows disabling subagent result stopgap explicitly", () => {
@@ -130,19 +135,25 @@ describe("normalizePluginConfig", () => {
   });
 
   it("prefers explicit semantic retry policy over legacy main-like boolean fallback", () => {
+    const warnings: string[] = [];
+
     expect(
       normalizePluginConfig({
         mainLikePostFirstTokenFailureEscalation: false,
         semanticRetry: {
           mainLikePostFirstTokenPolicy: "raise",
         },
+      }, {
+        warn: (message) => warnings.push(message),
       }),
     ).toMatchObject({
-      mainLikePostFirstTokenFailureEscalation: false,
       semanticRetry: {
         mainLikePostFirstTokenPolicy: "raise",
       },
     });
+    expect(warnings).toEqual([
+      expect.stringContaining("mainLikePostFirstTokenFailureEscalation"),
+    ]);
   });
 
   it("rejects invalid semantic retry policy values", () => {

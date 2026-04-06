@@ -20,7 +20,6 @@ function createPluginConfig(
   return {
     providers: [],
     semanticFailureGating: true,
-    mainLikePostFirstTokenFailureEscalation: true,
     semanticRetry: {
       maxAttempts: 3,
       baseBackoffMs: 200,

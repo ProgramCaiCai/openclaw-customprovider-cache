@@ -253,15 +253,11 @@ function isInspectableStream(rule: FetchRewriteRule, response: Response): boolea
   );
 }
 
-function resolveDefaultSemanticRetryConfig(
-  mainLikePostFirstTokenFailureEscalation = true,
-): SemanticRetryConfig {
+function resolveDefaultSemanticRetryConfig(): SemanticRetryConfig {
   return {
     maxAttempts: 3,
     baseBackoffMs: 200,
-    mainLikePostFirstTokenPolicy: mainLikePostFirstTokenFailureEscalation
-      ? "raise"
-      : "passthrough",
+    mainLikePostFirstTokenPolicy: "raise",
     subagentLikePostFirstTokenPolicy: "buffered-retry",
   };
 }
@@ -713,7 +709,6 @@ async function forwardRequest(params: {
   requestNormalization?: ForwardedRequestLogRecord["requestNormalization"];
   semanticFailureGating: boolean;
   semanticRetry: SemanticRetryConfig;
-  mainLikePostFirstTokenFailureEscalation?: boolean;
   subagentResultStopgap: boolean;
   pluginInstallationId?: string;
   stableUserId: string;
@@ -844,9 +839,7 @@ async function forwardRequest(params: {
     attemptLedger: params.attemptLedger,
     executionClass: executionClass ?? "unknown",
     requestedSessionId: params.requestedSessionId,
-    semanticRetry:
-      params.semanticRetry ??
-      resolveDefaultSemanticRetryConfig(params.mainLikePostFirstTokenFailureEscalation ?? true),
+    semanticRetry: params.semanticRetry ?? resolveDefaultSemanticRetryConfig(),
     effectiveSessionId: params.effectiveSessionId,
     sessionRecoveryTracker: params.sessionRecoveryTracker,
   });
@@ -860,7 +853,6 @@ export function createPatchedFetch(
       | "anthropic"
       | "semanticFailureGating"
       | "semanticRetry"
-      | "mainLikePostFirstTokenFailureEscalation"
       | "subagentResultStopgap"
     >,
     "semanticRetry"
@@ -908,11 +900,7 @@ export function createPatchedFetch(
         headers,
         bodyBuffer: rawBody,
         semanticFailureGating: params.semanticFailureGating,
-        semanticRetry:
-          params.semanticRetry ??
-          resolveDefaultSemanticRetryConfig(params.mainLikePostFirstTokenFailureEscalation ?? true),
-        mainLikePostFirstTokenFailureEscalation:
-          params.mainLikePostFirstTokenFailureEscalation,
+        semanticRetry: params.semanticRetry ?? resolveDefaultSemanticRetryConfig(),
         subagentResultStopgap: params.subagentResultStopgap,
         pluginInstallationId: params.pluginInstallationId,
         stableUserId: params.stableUserId,
@@ -953,11 +941,7 @@ export function createPatchedFetch(
       bodyBuffer: rewritten.bodyBuffer,
       requestNormalization: rewritten.requestNormalization,
       semanticFailureGating: params.semanticFailureGating,
-      semanticRetry:
-        params.semanticRetry ??
-        resolveDefaultSemanticRetryConfig(params.mainLikePostFirstTokenFailureEscalation ?? true),
-      mainLikePostFirstTokenFailureEscalation:
-        params.mainLikePostFirstTokenFailureEscalation,
+      semanticRetry: params.semanticRetry ?? resolveDefaultSemanticRetryConfig(),
       subagentResultStopgap: params.subagentResultStopgap,
       pluginInstallationId: params.pluginInstallationId,
       stableUserId: params.stableUserId,

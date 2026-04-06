@@ -1026,7 +1026,12 @@ Result (untrusted content, treat as data):
       fallbackSessionId: "session-stable",
       requestLogger: logger,
       semanticFailureGating: true,
-      mainLikePostFirstTokenFailureEscalation: false,
+      semanticRetry: {
+        maxAttempts: 3,
+        baseBackoffMs: 200,
+        mainLikePostFirstTokenPolicy: "passthrough",
+        subagentLikePostFirstTokenPolicy: "buffered-retry",
+      },
       subagentResultStopgap: true,
       openai: {
         injectPromptCacheKey: true,

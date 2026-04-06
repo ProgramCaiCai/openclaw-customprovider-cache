@@ -1,6 +1,6 @@
 {
   "name": "openclaw-customprovider-cache",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "description": "Independent OpenClaw plugin that preserves provider-native cache and session identifiers for custom providers.",
   "license": "MIT",
   "keywords": [

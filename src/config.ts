@@ -3,6 +3,10 @@ import type {
   PostFirstTokenFailurePolicy,
 } from "./types.js";
 
+type NormalizePluginConfigOptions = {
+  warn?: (message: string) => void;
+};
+
 function asRecord(value: unknown, field: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${field} must be an object`);
@@ -61,7 +65,10 @@ function readStringArray(value: unknown, field: string): string[] {
   });
 }
 
-export function normalizePluginConfig(raw: unknown): NormalizedPluginConfig {
+export function normalizePluginConfig(
+  raw: unknown,
+  options?: NormalizePluginConfigOptions,
+): NormalizedPluginConfig {
   const value = raw === undefined ? {} : asRecord(raw, "pluginConfig");
   const requestLoggingRaw =
     value.requestLogging === undefined ? {} : asRecord(value.requestLogging, "requestLogging");
@@ -75,6 +82,11 @@ export function normalizePluginConfig(raw: unknown): NormalizedPluginConfig {
     "mainLikePostFirstTokenFailureEscalation",
     true,
   );
+  if (value.mainLikePostFirstTokenFailureEscalation !== undefined) {
+    options?.warn?.(
+      "pluginConfig.mainLikePostFirstTokenFailureEscalation is deprecated; use semanticRetry.mainLikePostFirstTokenPolicy and semanticRetry.subagentLikePostFirstTokenPolicy instead.",
+    );
+  }
   const mainLikeLegacyFallback = mainLikePostFirstTokenFailureEscalation ? "raise" : "passthrough";
 
   return {
@@ -84,7 +96,6 @@ export function normalizePluginConfig(raw: unknown): NormalizedPluginConfig {
       "semanticFailureGating",
       true,
     ),
-    mainLikePostFirstTokenFailureEscalation,
     semanticRetry: {
       maxAttempts: readInteger(
         semanticRetryRaw.maxAttempts,

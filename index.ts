@@ -7,7 +7,9 @@ const plugin = {
   name: "OpenClaw Custom Provider Cache",
   description: "Independent OpenClaw plugin that preserves provider-native cache/session identifiers for custom providers.",
   register(api: PluginApiLike) {
-    const pluginConfig = normalizePluginConfig(api.pluginConfig);
+    const pluginConfig = normalizePluginConfig(api.pluginConfig, {
+      warn: (message) => api.logger.warn(message),
+    });
     let service: SessionMetadataProxyService | undefined;
 
     api.registerService({

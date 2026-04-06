@@ -106,8 +106,6 @@ export class SessionMetadataProxyService {
       fallbackSessionId: identity.fallbackSessionId,
       semanticFailureGating: this.params.pluginConfig.semanticFailureGating,
       semanticRetry: this.params.pluginConfig.semanticRetry,
-      mainLikePostFirstTokenFailureEscalation:
-        this.params.pluginConfig.mainLikePostFirstTokenFailureEscalation,
       subagentResultStopgap: this.params.pluginConfig.subagentResultStopgap,
       openai: this.params.pluginConfig.openai,
       anthropic: this.params.pluginConfig.anthropic,

@@ -72,7 +72,6 @@ export type SemanticFailureClassification =
 export type NormalizedPluginConfig = {
   providers: string[];
   semanticFailureGating: boolean;
-  mainLikePostFirstTokenFailureEscalation?: boolean;
   semanticRetry: SemanticRetryConfig;
   subagentResultStopgap: boolean;
   requestLogging: RequestLoggingConfig;

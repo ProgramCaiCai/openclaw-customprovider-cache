@@ -2,7 +2,7 @@
   "id": "openclaw-customprovider-cache",
   "name": "OpenClaw Custom Provider Cache",
   "description": "Independent OpenClaw plugin that preserves provider-native cache and session identifiers for custom providers.",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -15,10 +15,6 @@
         }
       },
       "semanticFailureGating": {
-        "type": "boolean",
-        "default": true
-      },
-      "mainLikePostFirstTokenFailureEscalation": {
         "type": "boolean",
         "default": true
       },
