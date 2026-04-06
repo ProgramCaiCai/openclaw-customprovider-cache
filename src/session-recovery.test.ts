@@ -10,6 +10,8 @@ import {
   SESSION_OVERLOAD_COOLDOWN_MS,
 } from "./session-recovery.js";
 
+const UUID_V7_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
 describe("createPersistedSessionRecoveryTracker", () => {
   const tempDirs: string[] = [];
 
@@ -39,7 +41,8 @@ describe("createPersistedSessionRecoveryTracker", () => {
     });
 
     const recoverySessionId = tracker.selectSessionId("session-poisoned");
-    expect(recoverySessionId).toMatch(/^session-stable-recover-/);
+    expect(recoverySessionId).toMatch(UUID_V7_RE);
+    expect(recoverySessionId).not.toMatch(/session|recover|openclaw/i);
     await tracker.flush();
 
     const reloaded = await createPersistedSessionRecoveryTracker({

@@ -1,6 +1,6 @@
 {
   "name": "openclaw-customprovider-cache",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "description": "Independent OpenClaw plugin that preserves provider-native cache and session identifiers for custom providers.",
   "license": "MIT",
   "keywords": [
@@ -20,6 +20,7 @@
     "src/config.ts",
     "src/fetch-patch.ts",
     "src/identity.ts",
+    "src/uuid-identity.ts",
     "src/proxy-rewrite.ts",
     "src/semantic-failure.ts",
     "src/subagent-result-stopgap.ts",

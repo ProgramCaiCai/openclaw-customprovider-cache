@@ -3,6 +3,10 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { PluginLogger, StableIdentity } from "./types.js";
+import {
+  createStableAnthropicUserId,
+  createStableOpenAiSessionId,
+} from "./uuid-identity.js";
 
 type StoredIdentity = {
   version: 1;
@@ -14,11 +18,10 @@ function shortHash(value: string): string {
 }
 
 function buildStableIdentity(prefix: string, installationId: string): StableIdentity {
-  const normalizedPrefix = prefix.trim().replace(/[^a-zA-Z0-9_-]+/g, "-");
   return {
     installationId,
-    userId: `${normalizedPrefix}-${installationId}`,
-    fallbackSessionId: `${normalizedPrefix}-session-${shortHash(installationId)}`,
+    userId: createStableAnthropicUserId(prefix, installationId),
+    fallbackSessionId: createStableOpenAiSessionId(prefix, installationId),
   };
 }
 
@@ -29,10 +32,11 @@ export async function resolveStableIdentity(params: {
   logger: PluginLogger;
 }): Promise<StableIdentity> {
   if (params.userIdOverride) {
+    const installationId = shortHash(params.userIdOverride);
     return {
-      installationId: shortHash(params.userIdOverride),
+      installationId,
       userId: params.userIdOverride,
-      fallbackSessionId: `${params.prefix}-session-${shortHash(params.userIdOverride)}`,
+      fallbackSessionId: createStableOpenAiSessionId(params.prefix, installationId),
     };
   }
 

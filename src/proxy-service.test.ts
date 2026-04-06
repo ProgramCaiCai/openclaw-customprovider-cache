@@ -7,6 +7,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionMetadataProxyService } from "./proxy-service.js";
 import type { NormalizedPluginConfig } from "./types.js";
 
+const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const UUID_V7_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
 async function readJson(response: Response): Promise<unknown> {
   return JSON.parse(await response.text());
 }
@@ -282,7 +285,8 @@ describe("SessionMetadataProxyService", () => {
     expect(requestRecord.url).toBe(`${cfg.models.providers.openai.baseUrl}/responses`);
     expect(requestRecord.method).toBe("POST");
     expect(requestRecord.timestamp).toBeTypeOf("string");
-    expect(requestRecord.headers.session_id).toMatch(/^openclaw-session-/);
+    expect(requestRecord.headers.session_id).toMatch(UUID_V7_RE);
+    expect(requestRecord.headers.session_id).not.toMatch(/openclaw/i);
     expect(requestRecord.headers["x-session-id"]).toBe(requestRecord.headers.session_id);
     expect(requestRecord.body).toMatchObject({
       model: "gpt-5.2",
@@ -290,11 +294,12 @@ describe("SessionMetadataProxyService", () => {
     });
     expect(requestRecord.correlation).toMatchObject({
       pluginInstallationId: expect.any(String),
-      stableUserId: expect.stringMatching(/^openclaw-/),
+      stableUserId: expect.stringMatching(UUID_V4_RE),
       requestedSessionId: requestRecord.headers.session_id,
       effectiveSessionId: requestRecord.headers.session_id,
       normalizationReplaySource: "fresh",
     });
+    expect(requestRecord.correlation?.stableUserId).not.toMatch(/openclaw/i);
 
     expect(responseRecord.event).toBe("response");
     expect(responseRecord.requestId).toBe(requestRecord.requestId);
@@ -788,7 +793,8 @@ describe("SessionMetadataProxyService", () => {
 
     expect(seenSessionIds[0]).toBe("session-poisoned");
     expect(seenSessionIds[1]).toBe("session-poisoned");
-    expect(seenSessionIds[2]).toMatch(/^openclaw-session-[a-f0-9]+-recover-/);
+    expect(seenSessionIds[2]).toMatch(UUID_V7_RE);
+    expect(seenSessionIds[2]).not.toMatch(/openclaw|recover/i);
     expect(payload.headers.session_id).toBe(seenSessionIds[2]);
     expect(payload.headers["x-session-id"]).toBe(seenSessionIds[2]);
     expect(payload.body.prompt_cache_key).toBe(seenSessionIds[2]);

@@ -7,6 +7,8 @@ import {
 } from "./fetch-patch.js";
 import type { ForwardedRequestLogger } from "./types.js";
 
+const UUID_V7_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
 describe("createPatchedFetch", () => {
   it("rewrites requests that target configured provider baseUrls", async () => {
     const originalFetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
@@ -421,7 +423,8 @@ describe("createPatchedFetch", () => {
 
     expect(seenSessionIds[0]).toBe("session-poisoned");
     expect(seenSessionIds[1]).toBe("session-poisoned");
-    expect(seenSessionIds[2]).toMatch(/^session-stable-recover-/);
+    expect(seenSessionIds[2]).toMatch(UUID_V7_RE);
+    expect(seenSessionIds[2]).not.toMatch(/session|recover|openclaw/i);
     expect(seenSessionIds[2]).not.toBe("session-poisoned");
     expect(payload.headers.session_id).toBe(seenSessionIds[2]);
     expect(payload.headers["x-session-id"]).toBe(seenSessionIds[2]);

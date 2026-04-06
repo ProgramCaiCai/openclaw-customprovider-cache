@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { PluginLogger } from "./types.js";
+import { createRecoveryOpenAiSessionId } from "./uuid-identity.js";
 
 const PLUGIN_STATE_DIR = path.join("plugins", "session-metadata-proxy");
 const SESSION_RECOVERY_STATE_FILE = "session-recovery-state.json";
@@ -45,7 +46,7 @@ export function resolveSessionRecoveryStatePath(stateDir: string): string {
 }
 
 function createRecoverySessionId(fallbackSessionId: string): string {
-  return `${fallbackSessionId}-recover-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+  return createRecoveryOpenAiSessionId(fallbackSessionId);
 }
 
 function isFiniteNumber(value: unknown): value is number {

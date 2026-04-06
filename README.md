@@ -15,6 +15,12 @@ Custom providers and provider gateways often key prompt caching or session affin
 
 That matters because upstream systems such as cache layers, prompt stores, or compatibility gateways can only reuse cached context when the request keeps presenting the same stable cache/session identifier across turns. OpenClaw still owns the transcript, pruning, and compaction. This plugin only preserves the provider-facing identity that lets the upstream cache recognize repeated conversation state.
 
+For auto-generated values, the plugin now uses provider-appropriate UUID-looking identifiers instead of `openclaw-*` markers:
+
+- Anthropic `metadata.user_id`: stable UUID v4-shaped value
+- OpenAI `session_id` / `x-session-id` / `prompt_cache_key`: stable UUID v7-shaped value
+- OpenAI poisoned-session recovery ids: fresh UUID v7-shaped value
+
 ## What the plugin does
 
 - Matches configured custom providers by `baseUrl`, API adapter, endpoint path, and request shape
@@ -124,7 +130,7 @@ Notes:
 - `openai.scrubAssistantCommentaryReplay`: defaults to `true`; reserved config switch for the upcoming OpenAI Responses request-body normalization path. It is intended to control future assistant replay scrubbing for covered custom providers and does not modify already stored transcripts
 - `anthropic.injectMetadataUserId`: defaults to `true`; set `false` to stop injecting a missing `metadata.user_id`
 - `anthropic.userId`: optional explicit `metadata.user_id`
-- `anthropic.userIdPrefix`: used when generating a stable installation-scoped identity
+- `anthropic.userIdPrefix`: used as salt when deriving a stable generated identity; it is not emitted verbatim in the generated UUID-shaped value
 
 ## Subagent result stopgap
 
